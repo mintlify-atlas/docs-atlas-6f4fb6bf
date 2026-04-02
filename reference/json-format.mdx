@@ -1,0 +1,425 @@
+---
+title: "JSON format"
+description: "Reference for the BMv2 JSON input format that P4 compilers produce and bmv2 targets consume."
+keywords: ["JSON", "p4c", "bmv2", "format", "schema", "header_types", "parsers", "pipelines", "tables", "actions"]
+---
+
+BMv2 targets take a single JSON file as input. This file is the compiled representation of your P4 program — you do not write it by hand. The `p4c` compiler produces it when you target bmv2:
+
+```bash
+p4c --target bmv2 --arch v1model --std p4-16 my_program.p4
+```
+
+This generates `my_program.json`, which you pass directly to a bmv2 target binary such as `simple_switch`.
+
+<Note>
+  The current JSON format version is **2.24**. Starting with version 2.0, the version is embedded in the file itself under `__meta__.version`. BMv2 performs a version check at startup and will reject files with an incompatible major version.
+</Note>
+
+## Top-level structure
+
+A BMv2 JSON file is a single object. Its top-level keys map to different aspects of the compiled P4 program.
+
+```json
+{
+  "__meta__": { "version": [2, 24], "compiler": "p4c" },
+  "header_types": [...],
+  "headers": [...],
+  "header_stacks": [...],
+  "header_union_types": [...],
+  "header_unions": [...],
+  "header_union_stacks": [...],
+  "errors": [...],
+  "enums": [...],
+  "parsers": [...],
+  "parse_vsets": [...],
+  "deparsers": [...],
+  "meter_arrays": [...],
+  "counter_arrays": [...],
+  "register_arrays": [...],
+  "calculations": [...],
+  "checksums": [...],
+  "learn_lists": [],
+  "actions": [...],
+  "pipelines": [...],
+  "extern_instances": [...],
+  "field_aliases": [...]
+}
+```
+
+## The type-value object
+
+Many places in the JSON use a two-key object with `type` and `value`. This is the standard way bmv2 represents a typed reference or constant.
+
+| `type` | `value` format |
+|---|---|
+| `field` | 2-tuple: `[header_instance_name, field_name]` |
+| `hexstr` | Hexadecimal string (big-endian), optionally negative |
+| `bool` | `true` or `false` |
+| `header` | String name of a header instance |
+| `header_stack` | String name of a header stack |
+| `calculation` | String name of a calculation object |
+| `register_array` | String name of a register array |
+| `meter_array` | String name of a meter array |
+| `counter_array` | String name of a counter array |
+| `string` | Character sequence |
+| `lookahead` | 2-tuple: `[bit_offset, bitwidth]` (parser only) |
+| `register` | 2-tuple: `[array_name, index_expression]` |
+| `stack_field` | 2-tuple: `[header_stack_name, field_name]` |
+| `expression` | Object with `op`, `left`, `right` |
+| `local` | Integer index into action runtime data |
+| `parameters_vector` | Array of type-value objects |
+
+### Expression operators
+
+The `expression` type supports the following `op` values:
+
+- Arithmetic: `+`, `-`, `*`, `<<`, `>>`
+- Comparison: `==`, `!=`, `>`, `>=`, `<`, `<=`
+- Logical: `and`, `or`, `not`
+- Bitwise: `&`, `|`, `^`, `~`
+- Header validity: `valid`, `valid_union`
+- Type conversion: `d2b` (data to bool), `b2d` (bool to data)
+- Modulo: `two_comp_mod` (2-complement modulo)
+- Saturating cast: `sat_cast`, `usat_cast`
+- Ternary: `?` (also has a `cond` attribute)
+- Stack access: `dereference_header_stack`, `last_stack_index`, `size_stack`, `access_field`
+- Union stack access: `dereference_union_stack`, `access_union_header`
+
+<Note>
+  There is one supported hidden field: `<header_instance_name>.$valid$`. It is a read-only 1-bit field encoding the validity of the corresponding header. It can be used in match keys and control-flow conditions.
+</Note>
+
+## Top-level keys
+
+<AccordionGroup>
+
+<Accordion title="__meta__">
+  Metadata about the JSON file itself.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `version` | `[major, minor]` | Format version as a 2-integer array. |
+  | `compiler` | string (optional) | Identifies the P4 compiler that produced this file. |
+</Accordion>
+
+<Accordion title="header_types">
+  All header type definitions from the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Fully qualified P4 name of the header type. |
+  | `id` | integer | Unique among all header types. |
+  | `fields` | array | Array of 2-tuples `[field_name, bitwidth]`. Use a 3-tuple `[field_name, bitwidth, signed]` to mark a field as signed. Variable-length fields use `"*"` as the bitwidth. |
+  | `length_exp` | expression | Required when a variable-length field is present. Evaluates to the variable-length field's bitwidth at runtime. |
+  | `max_length` | integer | Maximum header width in bytes. Required when a variable-length field is present. |
+</Accordion>
+
+<Accordion title="headers">
+  All header instances (including metadata instances) in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Header instance name. |
+  | `id` | integer | Unique among all header instances. |
+  | `header_type` | string | Name of the header type for this instance. |
+  | `metadata` | boolean | `true` if this is a metadata instance. |
+</Accordion>
+
+<Accordion title="header_stacks">
+  All header stacks declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Stack name. |
+  | `id` | integer | Unique among all header stacks. |
+  | `header_type` | string | Name of the header type for elements in this stack. |
+  | `header_ids` | integer[] | Ordered array of header instance IDs: `stack[0]`, `stack[1]`, etc. |
+</Accordion>
+
+<Accordion title="header_union_types / header_unions / header_union_stacks">
+  Header unions (introduced in P4_16) allow a set of mutually exclusive headers to share the same data.
+
+  **header_union_types** fields:
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Union type name. |
+  | `id` | integer | Unique among all union types. |
+  | `headers` | array | Array of 2-tuples `[member_name, header_type_name]`. |
+
+  **header_unions** fields:
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Union instance name. |
+  | `id` | integer | Unique among all union instances. |
+  | `union_type` | string | Name of the corresponding union type. |
+  | `header_ids` | integer[] | IDs of the header instances that make up the union. |
+
+  **header_union_stacks** fields:
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Union stack name. |
+  | `id` | integer | Unique among all union stacks. |
+  | `union_type` | string | Name of the union type for elements in this stack. |
+  | `header_union_ids` | integer[] | Ordered IDs of the union instances: `union_stack[0]`, `union_stack[1]`, etc. |
+</Accordion>
+
+<Accordion title="errors">
+  All errors declared in the P4 program (P4_16 only).
+
+  Each entry is a 2-element array: `[error_name, integer_value]`. The compiler assigns unique integer values in the range `[0, 2^31 - 1)`. The value `2^31 - 1` is reserved. `0` is recommended for the core library `NoError`.
+</Accordion>
+
+<Accordion title="enums">
+  All enum declarations (P4_16 only).
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Enum name as it appears in the P4 program. |
+  | `entries` | array | Array of 2-tuples `[constant_name, integer_value]`. Values are unique within the enum and in the range `[0, 2^31 - 1)`. |
+</Accordion>
+
+<Accordion title="parsers">
+  All parsers in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Parser name. |
+  | `id` | integer | Unique among all parsers. |
+  | `init_state` | string | Name of the start state. |
+  | `parse_states` | array | Array of parse state objects (see below). |
+
+  **Parse state fields:**
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | State name. |
+  | `id` | integer | Unique across all parse states in the entire JSON file. |
+  | `parser_ops` | array | Ordered list of parser operations (see below). |
+  | `transition_key` | array | Fields that form the transition key. Each entry is a type-value object with `type` of `field`, `stack_field`, `union_stack_field`, or `lookahead`. |
+  | `transitions` | array | Array of transition objects with `type` (`default`, `hexstr`, or `parse_vset`), `value`, `mask`, and `next_state`. |
+
+  **Parser operations** (`op` values):
+  - `extract` — extract a header instance, stack entry, or union stack entry
+  - `extract_VL` — extract with a dynamic length expression (P4_16)
+  - `set` — assign a field value
+  - `verify` — assert a condition; second parameter is an error constant
+  - `shift` — skip bytes (deprecated; use `advance`)
+  - `advance` — skip bits (must be a multiple of 8)
+  - `primitive` — call an extern method from a parser state (P4_16)
+</Accordion>
+
+<Accordion title="parse_vsets">
+  Parse value-sets allow the control plane to populate transition match values at runtime.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Value-set name. |
+  | `id` | integer | Unique among all parse value-sets. |
+  | `compressed_bitwidth` | integer | Bitwidth of each value in the set, excluding padding. |
+</Accordion>
+
+<Accordion title="deparsers">
+  All deparsers in the P4 program (declared or inferred from parsers).
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Deparser name. |
+  | `id` | integer | Unique among all deparsers. |
+  | `order` | string[] | Ordered list of header instance names to serialize. Non-valid headers are skipped. All stack and union instances must appear in the correct order. |
+</Accordion>
+
+<Accordion title="pipelines (tables, conditionals, action_calls)">
+  The top-level control flows — typically ingress and egress pipelines.
+
+  **Pipeline fields:**
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Pipeline name. |
+  | `id` | integer | Unique among all pipelines. |
+  | `init_table` | string | Name of the first table in this pipeline. |
+  | `action_profiles` | array | Action profile objects used by this pipeline. |
+  | `tables` | array | Table objects used by this pipeline (see below). |
+  | `conditionals` | array | Conditional branch objects (see below). |
+  | `action_calls` | array | Direct action call objects (rarely used; `p4c` uses dummy tables instead). |
+
+  **Table fields:**
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Table name. |
+  | `id` | integer | Unique across all tables in the file. |
+  | `match_type` | string | One of `exact`, `lpm`, `ternary`, `range`. |
+  | `type` | string | One of `simple`, `indirect` (action profiles), `indirect_ws` (with dynamic selector). |
+  | `action_profile` | string | Name of the action profile (indirect tables only). |
+  | `max_size` | integer | Maximum number of table entries. |
+  | `with_counters` | boolean | `true` if the table has direct counters. |
+  | `support_timeout` | boolean | `true` if the table supports entry ageing. |
+  | `key` | array | Match key specification. Each entry has `match_type`, `target`, `mask`, and optional `name`. |
+  | `actions` | string[] | List of actions this table supports. |
+  | `next_tables` | object | Maps action names (or `__HIT__`/`__MISS__`) to next table names. |
+  | `direct_meters` | string \| null | Name of the associated direct meter array, or `null`. |
+  | `default_entry` | object | Optional default entry with `action_id`, `action_data`, `action_const`, `action_entry_const`. |
+  | `entries` | array | Optional static entries. If present, makes the table immutable. |
+
+  Match types follow these precedence rules:
+  - Any `range` field → table `match_type` must be `range`
+  - Any `ternary` field → table `match_type` must be `ternary`
+  - Any `lpm` field → table `match_type` must be `lpm` or `ternary`
+  - At most one `lpm` field is allowed per table
+
+  **Conditional fields:**
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Conditional node name. |
+  | `id` | integer | Unique across all conditionals in the file. |
+  | `expression` | object | The boolean expression to evaluate. |
+  | `true_next` | string \| null | Next control flow node if the condition is true. |
+  | `false_next` | string \| null | Next control flow node if the condition is false. |
+</Accordion>
+
+<Accordion title="actions">
+  All actions declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Action name. |
+  | `id` | integer | Unique among all actions. |
+  | `runtime_data` | array | Array of `{name, bitwidth}` objects describing the action's parameters. |
+  | `primitives` | array | Ordered list of primitive calls. Each entry has `op` (primitive name) and `parameters` (type-value objects). |
+
+  **Core primitives supported by all targets:**
+  - `assign`, `assign_VL`, `assign_header`, `assign_union`, `assign_header_stack`, `assign_union_stack`
+  - `push`, `pop` — stack manipulation
+  - `_jump`, `_jump_if_zero` — control flow within an action
+  - `exit` — mark packet for exit
+  - `assume`, `assert` — formal verification statements
+  - `log_msg` — log a user-defined message to the console
+
+  Extern instance methods are translated to primitives where the extern instance is the first parameter. For example, `extern1.methodA(x, y)` becomes a call to `_my_extern_type_methodA` with `{"type": "extern", "value": "extern1"}` as the first argument.
+</Accordion>
+
+<Accordion title="calculations">
+  Named hash calculations, primarily used for checksums.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Calculation name. |
+  | `id` | integer | Unique among all calculations. |
+  | `algo` | string | Hash algorithm (must be supported by the target). |
+  | `input` | array | Array of type-value objects with types `field`, `hexstr`, `header`, or `payload`. For `hexstr`, a `bitwidth` attribute is required. |
+
+  If `type` is `payload`, all headers after the last included header and the packet payload are included in the input — required for TCP checksum computation. Invalid headers are skipped when the calculation is evaluated.
+</Accordion>
+
+<Accordion title="checksums">
+  Checksum update and verify instructions in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Checksum name. |
+  | `id` | integer | Unique among all checksums. |
+  | `target` | 2-tuple | Field where the checksum result is written: `[header_instance, field_name]`. |
+  | `type` | string | Always `"generic"`. |
+  | `calculation` | string | Name of the calculation to use. |
+  | `update` | boolean | Whether to update the checksum in the deparser. Defaults to `true`. |
+  | `verify` | boolean | Whether to verify the checksum in the parser. Defaults to `true`. |
+  | `if_cond` | expression \| null | Optional boolean condition controlling whether verification/update applies. `null` means unconditional. |
+</Accordion>
+
+<Accordion title="meter_arrays">
+  All meter arrays declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Meter array name. |
+  | `id` | integer | Unique among all meter arrays. |
+  | `type` | string | Either `"bytes"` or `"packets"`. |
+  | `rate_count` | integer | Number of rates. Default is 2 for standard 2-rate 3-color meters. |
+  | `size` | integer | Number of meter instances in the array. |
+  | `is_direct` | boolean | `true` if this is a direct meter array attached to a table. |
+  | `binding` | string | Name of the table this meter is attached to (direct meters only). |
+  | `result_target` | 2-tuple | Field where the meter color result is stored (direct meters only). |
+</Accordion>
+
+<Accordion title="counter_arrays">
+  All counter arrays declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Counter array name. |
+  | `id` | integer | Unique among all counter arrays. |
+  | `size` | integer | Number of counter instances in the array. |
+  | `is_direct` | boolean | `true` if this is a direct counter array attached to a table. |
+  | `binding` | string | Name of the table this counter is attached to (direct counters only). |
+
+  BMv2 counters always count both bytes and packets. There is no `type` attribute.
+</Accordion>
+
+<Accordion title="register_arrays">
+  All register arrays declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Register array name. |
+  | `id` | integer | Unique among all register arrays. |
+  | `size` | integer | Number of register cells in the array. |
+  | `bitwidth` | integer | Width in bits of each register cell. |
+</Accordion>
+
+<Accordion title="extern_instances">
+  All extern instances declared in the P4 program.
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `name` | string | Extern instance name. |
+  | `id` | integer | Unique among all extern instances. |
+  | `type` | string | Extern type name. The target must support this type. |
+  | `attribute_values` | array | Initial values for the extern's attributes. Each entry has `name`, `type` (`hexstr`, `string`, or `expression`), and `value`. |
+</Accordion>
+
+<Accordion title="learn_lists">
+  Not yet documented. Use an empty JSON array: `[]`.
+</Accordion>
+
+<Accordion title="field_aliases">
+  Maps field names expected by the bmv2 target architecture to field names used in the P4 program. Useful when your P4 program uses different names for standard metadata fields.
+
+  Each entry is a 2-tuple:
+  - First element: the field name expected by bmv2 (e.g. `"standard_metadata.egress_port"`)
+  - Second element: a 2-tuple `[header_instance_name, field_member_name]` as used in the P4 / JSON
+
+  ```json
+  "field_aliases": [
+    ["standard_metadata.egress_port", ["my_metadata", "my_egress_port"]]
+  ]
+  ```
+</Accordion>
+
+</AccordionGroup>
+
+## Match-action entry format
+
+Static entries specified in a table's `entries` array follow this structure:
+
+| Field | Type | Description |
+|---|---|---|
+| `match_key` | array | One entry per key field, each with `match_type` and type-specific attributes. |
+| `action_entry` | object | `action_id` and `action_data` (array of hexstring arguments). |
+| `priority` | integer | Entry priority. Lower value = higher priority. Only used for `ternary` or `range` tables. |
+
+Match key entry attributes by `match_type`:
+
+| `match_type` | Required attributes |
+|---|---|
+| `valid` | `key` (boolean) |
+| `exact` | `key` (hexstring) |
+| `lpm` | `key` (hexstring), `prefix_length` (integer) |
+| `ternary` | `key` (hexstring), `mask` (hexstring) |
+| `range` | `start` (hexstring), `end` (hexstring) |
+
+<Warning>
+  Hexstrings in match keys and masks must be byte-padded to match the field width. Duplicate entries (by match key) trigger an error at load time.
+</Warning>
+
+## Arithmetic notes
+
+Arithmetic is computed with infinite precision. When a value is stored into a field, it is truncated to the field's bitwidth. Signed fields use 2-complement representation and require a bitwidth of at least 2.

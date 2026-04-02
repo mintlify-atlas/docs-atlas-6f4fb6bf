@@ -1,80 +1,207 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Compile a P4 program, run it on simple_switch, and populate your first table entry in under five minutes."
 ---
 
-## Get started in three steps
+This guide walks you through the core bmv2 workflow: compile a P4_16 program to JSON with `p4c`, start `simple_switch` bound to two network interfaces, connect the CLI, and add a table entry.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+<CardGroup cols={2}>
+  <Card title="BMv2 installed" icon="download" href="/installation">
+    `simple_switch` and `simple_switch_CLI` must be on your `PATH`.
+  </Card>
+  <Card title="p4c compiler installed" icon="code" href="https://github.com/p4lang/p4c">
+    The `p4c` compiler with BMv2 backend support. See the p4c README for install instructions.
+  </Card>
+</CardGroup>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+You also need at least two network interfaces to bind to the switch ports. Virtual ethernet pairs work well for local testing — see the helper scripts `tools/veth_setup.sh` and `tools/veth_teardown.sh` in the bmv2 repository.
 
-### Step 2: Deploy your changes
+---
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+## Step-by-step
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<Steps>
+  <Step title="Write or obtain a P4 program">
+    Start with a P4_16 program targeting the `v1model` architecture. The bmv2 repository includes example programs under `targets/` (e.g., `targets/simple_router/`, `targets/l2_switch/`).
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    For this guide, assume your program is called `my_program.p4`.
 
-### Step 3: Go live
+    <Note>
+      `simple_switch` supports both P4_14 and P4_16 programs. For P4_16, use the `v1model` architecture. For PSA programs, use `psa_switch` instead — see [Targets](/targets/overview).
+    </Note>
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Compile the P4 program to JSON">
+    Use `p4c` to produce the BMv2 JSON file:
+
+    ```bash
+    p4c --target bmv2 --arch v1model --std p4-16 my_program.p4
+    ```
+
+    This produces `my_program.json` in the current directory. The JSON file encodes the parser, match-action tables, and deparser — everything `simple_switch` needs to implement your program without any C++ recompilation.
+
+    <Tip>
+      For P4_14 programs, use `--std p4-14`. The `p4c` bmv2 backend supports both language versions.
+    </Tip>
+  </Step>
+
+  <Step title="Start simple_switch">
+    Run `simple_switch` with the compiled JSON and bind it to two network interfaces using `-i <port>@<interface>`:
+
+    ```bash
+    sudo simple_switch -i 0@<iface0> -i 1@<iface1> my_program.json
+    ```
+
+    Replace `<iface0>` and `<iface1>` with your actual interface names (e.g., `veth0`, `veth2`, `eth0`).
+
+    For example, with a virtual ethernet pair:
+
+    ```bash
+    sudo simple_switch -i 0@veth0 -i 1@veth2 my_program.json
+    ```
+
+    The switch starts a Thrift RPC server on port `9090` by default. You will use this port to connect the CLI.
+
+    <Tip>
+      To enable event logging so you can observe parser transitions and table hits in real time, add the `--nanolog` flag:
+      ```bash
+      sudo simple_switch -i 0@veth0 -i 1@veth2 --nanolog ipc:///tmp/bm-log.ipc my_program.json
+      ```
+      Then attach `tools/nanomsg_client.py` in a second terminal. See [Event logging](/debugging/event-logging) for details.
+    </Tip>
+  </Step>
+
+  <Step title="Connect the CLI">
+    In a second terminal, connect to the running switch using `simple_switch_CLI` (installed with bmv2):
+
+    ```bash
+    simple_switch_CLI --thrift-port 9090
+    ```
+
+    Alternatively, use the Python script directly from the repository:
+
+    ```bash
+    ./targets/simple_switch/sswitch_CLI.py --thrift-port 9090
+    ```
+
+    Or the lower-level `runtime_CLI.py` (works with all bmv2 targets):
+
+    ```bash
+    ./tools/runtime_CLI.py --thrift-port 9090
+    ```
+
+    You will see a `RuntimeCmd:` prompt. The CLI supports tab-completion.
+
+    <Note>
+      If you are running multiple switch instances on the same machine, each needs a different Thrift port. Pass `--thrift-port <port>` to `simple_switch` and use the same port when connecting the CLI.
+    </Note>
+  </Step>
+
+  <Step title="Add a table entry">
+    Use `table_add` to install a forwarding rule. The exact table name and action depend on your P4 program. For a simple L3 forwarding program with a table named `ipv4_lpm` and an action `set_nhop`:
+
+    ```
+    RuntimeCmd: table_add ipv4_lpm set_nhop 10.0.1.0/24 => 10.0.1.1 1
+    ```
+
+    The general syntax is:
+
+    ```
+    table_add <table name> <action name> <match fields> => <action parameters> [priority]
+    ```
+
+    Other common CLI commands:
+
+    | Command | Description |
+    |---------|-------------|
+    | `table_set_default <table> <action> <params>` | Set the default action when no entry matches |
+    | `table_add <table> <action> <match> => <params>` | Add a match-action entry |
+    | `table_delete <table> <entry handle>` | Remove an entry by its handle |
+    | `table_dump <table>` | Print all entries in a table |
+
+    <Tip>
+      The example programs in the bmv2 repository include `commands.txt` files showing real CLI sessions. See `targets/l2_switch/commands.txt` and `targets/simple_router/commands.txt`.
+    </Tip>
+  </Step>
+</Steps>
+
+---
+
+## Complete example
+
+The following example uses the `simple_router` target that ships with bmv2.
+
+<Steps>
+  <Step title="Compile simple_router">
+    ```bash
+    p4c --target bmv2 --arch v1model --std p4-14 targets/simple_router/simple_router.p4
+    ```
+  </Step>
+
+  <Step title="Set up virtual interfaces">
+    ```bash
+    sudo bash tools/veth_setup.sh
+    ```
+  </Step>
+
+  <Step title="Start the switch">
+    ```bash
+    sudo simple_switch -i 0@veth0 -i 1@veth2 simple_router.json
+    ```
+  </Step>
+
+  <Step title="Load table entries from a file">
+    The `runtime_CLI.py` script can read commands from a file, which is useful for scripting:
+
+    ```bash
+    ./tools/runtime_CLI.py < targets/simple_router/commands.txt
+    ```
+  </Step>
+</Steps>
+
+---
+
+## CLI reference
+
+The CLI connects to the Thrift RPC server inside `simple_switch`. One CLI instance controls one switch device.
+
+`simple_switch_CLI` extends `runtime_CLI.py` with `simple_switch`-specific commands for managing egress queues and mirroring sessions.
+
+<CodeGroup>
+
+```bash simple_switch_CLI
+simple_switch_CLI --thrift-port 9090
+```
+
+```bash runtime_CLI.py (any target)
+./tools/runtime_CLI.py --thrift-port 9090
+```
+
+```bash custom Thrift IP
+simple_switch_CLI --thrift-ip 192.168.1.10 --thrift-port 9090
+```
+
+</CodeGroup>
+
+See [Runtime CLI](/control-plane/runtime-cli) for the full command reference, including multicast group configuration.
+
+---
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Runtime CLI" icon="terminal" href="/control-plane/runtime-cli">
+    Full reference for table, register, meter, and multicast CLI commands.
+  </Card>
+  <Card title="simple_switch target" icon="server" href="/targets/simple-switch">
+    Understand the v1model architecture, standard metadata, and simple_switch-specific options.
+  </Card>
+  <Card title="Debugging" icon="bug" href="/debugging/debugger">
+    Use the interactive debugger to set breakpoints on P4 objects and packet fields.
+  </Card>
+  <Card title="Event logging" icon="list" href="/debugging/event-logging">
+    Monitor parser transitions and table hits in real time with nanomsg.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

@@ -1,0 +1,434 @@
+---
+title: "Register, meter, and counter commands"
+description: "CLI commands for reading and writing P4 registers, configuring meters, managing counters, controlling egress queues, and working with action profiles in BMv2."
+keywords: ["register_read", "register_write", "meter_set_rates", "counter_read", "act_prof", "set_queue_depth", "set_queue_rate", "BMv2", "runtime CLI"]
+---
+
+Most commands on this page are available in both `runtime_CLI` and `simple_switch_CLI`. Commands available only in `simple_switch_CLI` are marked accordingly.
+
+## Register commands
+
+P4 register arrays are stateful memory you can read and write from the control plane at runtime.
+
+### register_read
+
+```
+register_read <name> [index]
+```
+
+Reads the value stored in a P4 register at a given index.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 register array.
+</ParamField>
+
+<ParamField path="index" type="number">
+  Zero-based index into the register array to read.
+</ParamField>
+
+```text Example
+RuntimeCmd: register_read myreg1 5
+myreg1[5]= 27
+```
+
+### register_write
+
+```
+register_write <name> <index> <value>
+```
+
+Writes a value to a specific index of a P4 register array.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 register array.
+</ParamField>
+
+<ParamField path="index" type="number" required>
+  Zero-based index to write.
+</ParamField>
+
+<ParamField path="value" type="number" required>
+  Integer value to write to the register.
+</ParamField>
+
+```text Example
+RuntimeCmd: register_write myreg1 10 42
+```
+
+### register_reset
+
+```
+register_reset <name>
+```
+
+Resets all indices of a register array to zero.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 register array to reset.
+</ParamField>
+
+```text Example
+RuntimeCmd: register_reset myreg1
+```
+
+---
+
+## Meter commands
+
+Meters implement token-bucket rate limiting as specified in [RFC 2697](https://tools.ietf.org/html/rfc2697) (single-rate) and [RFC 2698](https://tools.ietf.org/html/rfc2698) (two-rate).
+
+### meter_set_rates
+
+```
+meter_set_rates <name> <index> <rate_1>:<burst_1> <rate_2>:<burst_2> ...
+```
+
+Configures the rate and burst parameters for one cell of a meter array.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 meter array.
+</ParamField>
+
+<ParamField path="index" type="number" required>
+  Zero-based index into the meter array to configure.
+</ParamField>
+
+<ParamField path="rate:burst pairs" type="string" required>
+  One or more `rate:burst` pairs separated by spaces. The number of pairs must match the meter's configuration (one pair for srTCM, two pairs for trTCM).
+</ParamField>
+
+#### Rate units
+
+| Meter type | Rate unit | Burst unit |
+|------------|-----------|------------|
+| Bytes meter | bytes/microsecond | bytes |
+| Packets meter | packets/microsecond | packets |
+
+```text Syntax reference
+RuntimeCmd: help meter_set_rates
+Configure rates for a meter: meter_set_rates <name> <index> <rate_1>:<burst_1> <rate_2>:<burst_2> ...
+```
+
+<Tip>
+  To convert from Mbps to bytes/microsecond: divide Mbps by 8. For example, 100 Mbps = 12.5 bytes/microsecond.
+</Tip>
+
+---
+
+## Counter commands
+
+P4 counters track packet and/or byte counts per index. These commands let you read, write, and reset counter values from the control plane.
+
+### counter_read
+
+```
+counter_read <name> <index>
+```
+
+Reads the counter value at a given index. The output format depends on whether the counter tracks bytes, packets, or both.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 counter array.
+</ParamField>
+
+<ParamField path="index" type="number" required>
+  Zero-based index to read.
+</ParamField>
+
+### counter_write
+
+```
+counter_write <name> <index> <value>
+```
+
+Sets the counter value at a given index to the specified value.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 counter array.
+</ParamField>
+
+<ParamField path="index" type="number" required>
+  Zero-based index to write.
+</ParamField>
+
+<ParamField path="value" type="number" required>
+  Value to write to the counter.
+</ParamField>
+
+### counter_reset
+
+```
+counter_reset <name>
+```
+
+Resets all indices of a counter array to zero.
+
+<ParamField path="name" type="string" required>
+  Name of the P4 counter array to reset.
+</ParamField>
+
+---
+
+## Queue commands
+
+<Warning>
+  The following commands are `simple_switch_CLI` only.
+</Warning>
+
+`simple_switch` uses priority queues per egress port. These commands let you control queue capacity and drain rate.
+
+### set_queue_depth
+
+```
+set_queue_depth <nb_pkts> [<egress_port> [<priority>]]
+```
+
+Sets the maximum depth of one or all egress queues, measured in number of packets.
+
+<ParamField path="nb_pkts" type="number" required>
+  Maximum queue depth in packets.
+</ParamField>
+
+<ParamField path="egress_port" type="number">
+  Egress port to configure. If omitted, the depth is set for all queues on all ports.
+</ParamField>
+
+<ParamField path="priority" type="number">
+  Priority queue id (same as `qid` in `queueing_metadata`). If omitted, the depth is set for all priority queues on the specified `egress_port`.
+</ParamField>
+
+```text Syntax reference
+RuntimeCmd: help set_queue_depth
+Set depth of one / all egress queue(s): set_queue_depth <nb_pkts> [<egress_port> [<priority>]]
+```
+
+### set_queue_rate
+
+```
+set_queue_rate <rate_pps> [<egress_port> [<priority>]]
+```
+
+Sets the rate at which packets are drained from one or all egress queues.
+
+<ParamField path="rate_pps" type="number" required>
+  Queue drain rate in packets per second.
+</ParamField>
+
+<ParamField path="egress_port" type="number">
+  Egress port to configure. If omitted, the rate is set for all queues on all ports.
+</ParamField>
+
+<ParamField path="priority" type="number">
+  Priority queue id. If omitted, the rate is set for all priority queues on the specified `egress_port`.
+</ParamField>
+
+```text Syntax reference
+RuntimeCmd: help set_queue_rate
+Set rate of one / all egress queue(s): set_queue_rate <rate_pps> [<egress_port> [<priority>]]
+```
+
+---
+
+## Time commands
+
+<Warning>
+  The following commands are `simple_switch_CLI` only.
+</Warning>
+
+### get_time_elapsed
+
+```
+get_time_elapsed
+```
+
+No parameters. Returns the time elapsed since `simple_switch` started, in microseconds.
+
+### get_time_since_epoch
+
+```
+get_time_since_epoch
+```
+
+No parameters. Returns the current time as microseconds since the Unix epoch.
+
+---
+
+## Action profile commands
+
+Action profiles and action selectors allow tables to share action data and implement ECMP-style selection. These commands manage the members and groups within an action profile.
+
+<Note>
+  These commands apply to tables declared with `implementation = action_profile(...)` or `implementation = action_selector(...)` in your P4 program.
+</Note>
+
+### act_prof_create_member
+
+```
+act_prof_create_member <action profile name> <action name> <action parameters>
+```
+
+Creates a new member in an action profile with the specified action and parameters. Returns a member handle.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="action name" type="string" required>
+  Action to associate with this member.
+</ParamField>
+
+<ParamField path="action parameters" type="string">
+  Parameters for the action, in the order defined in the P4 program.
+</ParamField>
+
+### act_prof_modify_member
+
+```
+act_prof_modify_member <action profile name> <member handle> <action name> <action parameters>
+```
+
+Updates the action and parameters of an existing action profile member.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="member handle" type="number" required>
+  Handle of the member to modify, as returned by `act_prof_create_member`.
+</ParamField>
+
+<ParamField path="action name" type="string" required>
+  New action for the member.
+</ParamField>
+
+<ParamField path="action parameters" type="string">
+  Parameters for the new action.
+</ParamField>
+
+### act_prof_delete_member
+
+```
+act_prof_delete_member <action profile name> <member handle>
+```
+
+Deletes a member from an action profile. The member must not be part of any group when deleted.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="member handle" type="number" required>
+  Handle of the member to delete.
+</ParamField>
+
+### act_prof_create_group
+
+```
+act_prof_create_group <action profile name>
+```
+
+Creates a new empty group in an action profile (used with action selectors). Returns a group handle.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+### act_prof_delete_group
+
+```
+act_prof_delete_group <action profile name> <group handle>
+```
+
+Deletes a group from an action profile. It is recommended to remove all members from the group before deleting it.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="group handle" type="number" required>
+  Handle of the group to delete.
+</ParamField>
+
+### act_prof_add_member_to_group
+
+```
+act_prof_add_member_to_group <action profile name> <member handle> <group handle>
+```
+
+Adds a member to a group within an action profile.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="member handle" type="number" required>
+  Handle of the member to add.
+</ParamField>
+
+<ParamField path="group handle" type="number" required>
+  Handle of the group to add the member to.
+</ParamField>
+
+### act_prof_remove_member_from_group
+
+```
+act_prof_remove_member_from_group <action profile name> <member handle> <group handle>
+```
+
+Removes a member from a group within an action profile.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="member handle" type="number" required>
+  Handle of the member to remove.
+</ParamField>
+
+<ParamField path="group handle" type="number" required>
+  Handle of the group to remove the member from.
+</ParamField>
+
+### act_prof_dump_member
+
+```
+act_prof_dump_member <action profile name> <member handle>
+```
+
+Displays the current action and parameters of a specific action profile member.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="member handle" type="number" required>
+  Handle of the member to inspect.
+</ParamField>
+
+### act_prof_dump_group
+
+```
+act_prof_dump_group <action profile name> <group handle>
+```
+
+Displays the members currently in an action profile group.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile.
+</ParamField>
+
+<ParamField path="group handle" type="number" required>
+  Handle of the group to inspect.
+</ParamField>
+
+### act_prof_dump
+
+```
+act_prof_dump <action profile name>
+```
+
+Displays all members and groups in an action profile.
+
+<ParamField path="action profile name" type="string" required>
+  Name of the action profile to dump.
+</ParamField>

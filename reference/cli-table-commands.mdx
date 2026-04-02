@@ -1,0 +1,212 @@
+---
+title: "Table commands"
+description: "CLI commands for managing P4 match-action tables in the BMv2 runtime: adding, deleting, and configuring entries and default actions."
+keywords: ["table_add", "table_set_default", "table_delete", "show_tables", "match fields", "runtime CLI", "BMv2"]
+---
+
+These commands are available in both `runtime_CLI` and `simple_switch_CLI` unless otherwise noted. Use `show_tables` and `show_actions` to discover the table and action names defined in your loaded P4 program.
+
+## Inspecting tables and actions
+
+### show_tables
+
+```
+show_tables
+```
+
+No parameters. Lists every table in the currently loaded P4 program with:
+
+- Table name
+- Implementation (`None`, or an action profile / action selector name)
+- Search key fields — name, match kind (`exact`, `lpm`, `ternary`, `range`), and width in bits
+
+<Note>
+  Fields with match kind `optional` in P4 source code are represented as `ternary` in the BMv2 JSON file and are shown as `ternary` in the output.
+</Note>
+
+### show_actions
+
+```
+show_actions
+```
+
+No parameters. Lists every action in the currently loaded P4 program with its name and all parameter names and widths in bits.
+
+### show_ports
+
+```
+show_ports
+```
+
+No parameters. Shows port numbers, the interface names they are bound to, and their current status (e.g. `up` or `down`).
+
+---
+
+## Adding table entries
+
+### table_add
+
+```
+table_add <table name> <action name> <match fields> => <action parameters> [priority]
+```
+
+Adds an entry to a match-action table. Match fields and action parameters must appear in the same order as defined in the P4 program.
+
+<AccordionGroup>
+  <Accordion title="Numeric value formats">
+
+    Numeric values in match fields and action parameters can be written in several formats:
+
+    | Format | Example | Notes |
+    |--------|---------|-------|
+    | Decimal | `42` | Default format |
+    | Hexadecimal | `0x2a` | Prefix with `0x` |
+    | IPv4 dotted-decimal | `10.1.2.3` | For 32-bit fields |
+    | IPv6 IETF notation | `FEDC:BA98:7654:3210:FEDC:BA98:7654:3210` or `1080::8:800:200C:417A` | For 128-bit fields. See [RFC 2732](https://www.ietf.org/rfc/rfc2732.txt). |
+    | Ethernet MAC | `00:12:34:56:78:9a` | For 48-bit fields; each byte is two hex digits separated by `:` |
+
+  </Accordion>
+
+  <Accordion title="Match field formats by match kind">
+
+    The syntax for each match field depends on its match kind, shown in `show_tables` output.
+
+    **`exact`** — provide the value directly:
+    ```
+    192.168.1.1
+    ```
+
+    **`lpm`** — value followed by prefix length after `/`:
+    ```
+    0x0a010203/24
+    ```
+    The prefix length must be in decimal. A prefix length of `0` matches any value.
+
+    **`ternary`** — value `&&&` mask, no spaces around `&&&`:
+    ```
+    0x0a010000&&&0xffffff00
+    ```
+    Mask bit `1` = exact match position; mask bit `0` = wildcard. To match any value: `0&&&0`.
+
+    **`optional`** — same syntax as `ternary`. The CLI does not enforce that the mask is all-ones or zero.
+
+    **`range`** — minimum `->` maximum, no spaces around `->`:
+    ```
+    10->100
+    ```
+    To match any value of an 8-bit field: `0->255`. For 32-bit: `0->0xffffffff`.
+
+  </Accordion>
+
+  <Accordion title="Priority">
+
+    A `priority` value (integer) is **required** when any search key field has match kind `ternary`, `optional`, or `range`. It is an error to specify `priority` for any other kind of table.
+
+    When multiple entries match a search key, the entry with the **smallest** numeric priority value wins and its action is executed.
+
+  </Accordion>
+</AccordionGroup>
+
+<ParamField path="table name" type="string" required>
+  Name of the P4 table. Use `show_tables` to list available table names.
+</ParamField>
+
+<ParamField path="action name" type="string" required>
+  Name of the action to execute on a match. Use `show_actions` to list available action names.
+</ParamField>
+
+<ParamField path="match fields" type="string" required>
+  Space-separated list of match field values. Order must match the table's key field order as defined in the P4 program. Format depends on each field's match kind.
+</ParamField>
+
+<ParamField path="action parameters" type="string">
+  Space-separated list of action parameter values. Order must match the action's parameter order as defined in the P4 program.
+</ParamField>
+
+<ParamField path="priority" type="number">
+  Integer priority value. Required if any match field is `ternary`, `optional`, or `range`. Lower value = higher priority.
+</ParamField>
+
+#### Examples
+
+<CodeGroup>
+
+```text Exact match
+RuntimeCmd: table_add ipv4_lpm set_nhop 10.0.0.1/32 => 10.0.0.1 1
+```
+
+```text LPM match
+RuntimeCmd: table_add ipv4_lpm set_nhop 0x0a010203/24 => 10.1.2.1 1
+```
+
+```text Ternary match with priority
+RuntimeCmd: table_add acl drop 0x0a010000&&&0xffffff00 => 2
+```
+
+```text Range match with priority
+RuntimeCmd: table_add port_range forward 10->100 => 0 1
+```
+
+</CodeGroup>
+
+---
+
+## Setting default actions
+
+### table_set_default
+
+```
+table_set_default <table name> <action name> <action parameters>
+```
+
+Assigns a different default action to a table. The default action runs when the table is applied and the search key does not match any installed entry.
+
+See the `table_add` documentation for how to specify action parameters.
+
+<ParamField path="table name" type="string" required>
+  Name of the P4 table.
+</ParamField>
+
+<ParamField path="action name" type="string" required>
+  Name of the action to use as the new default.
+</ParamField>
+
+<ParamField path="action parameters" type="string">
+  Parameters for the default action, in the same order as the P4 program definition.
+</ParamField>
+
+### table_reset_default
+
+```
+table_reset_default <table name>
+```
+
+Resets the default action of a table back to its original value as specified in the P4 program. If the P4 program does not define a default action, it resets to a no-op (`NoAction`).
+
+<ParamField path="table name" type="string" required>
+  Name of the P4 table to reset.
+</ParamField>
+
+---
+
+## Removing table entries
+
+### table_delete
+
+```
+table_delete <table name> <entry handle>
+```
+
+Removes a single entry from a table using its entry handle. Entry handles are returned when entries are added with `table_add`.
+
+<ParamField path="table name" type="string" required>
+  Name of the P4 table.
+</ParamField>
+
+<ParamField path="entry handle" type="number" required>
+  Integer handle identifying the entry to remove, as returned by `table_add`.
+</ParamField>
+
+<Warning>
+  The `table_delete` command requires the numeric entry handle, not the match key values. Record handles when adding entries if you need to delete them later.
+</Warning>

@@ -1,0 +1,245 @@
+---
+title: "Custom externs"
+description: "Implement P4 extern objects and functions in C++, register them with bmv2, and load them at runtime using --load-modules."
+keywords: ["custom extern", "ExternType", "BM_REGISTER_EXTERN", "BM_REGISTER_EXTERN_METHOD", "extern function", "load-modules", "bmv2", "P4 extern"]
+---
+
+P4 extern objects and functions let a P4 program call out to target-specific C++ code from within actions. bmv2 implements them as shared libraries that are loaded at switch startup. You can add new externs without modifying or recompiling the switch binary.
+
+## What an extern is
+
+In P4, an `extern` is an opaque object or function whose behavior is defined by the target. In bmv2 terms:
+
+- An **extern object** is a C++ class that inherits from `bm::ExternType`. The P4 program instantiates it (optionally with constructor parameters) and calls its methods from actions.
+- An **extern function** is a free C++ function directly callable from P4 actions.
+
+Both are registered with the bmv2 factory using macros from `bm/bm_sim/extern.h` and resolved at runtime when the JSON config is loaded.
+
+## The ExternType base class
+
+All extern objects inherit from `bm::ExternType` (defined in `bm/bm_sim/extern.h`):
+
+```cpp
+class ExternType {
+ public:
+  // Override to declare attributes (constructor parameters from P4).
+  virtual void _register_attributes() = 0;
+
+  // Override to perform initialization after attributes are set.
+  virtual void init() {}
+
+ protected:
+  // Access the packet currently being processed.
+  Packet &get_packet() const;
+
+  // Access the full P4Objects graph (registers, tables, etc.).
+  P4Objects &get_p4objects() const;
+};
+```
+
+Attributes are P4 constructor arguments (e.g., `CustomCounter<bit<8>>(0x01)` passes an initial count). Declare them in `_register_attributes()` using the `BM_EXTERN_ATTRIBUTES` and `BM_EXTERN_ATTRIBUTE_ADD` macros.
+
+## Registration macros
+
+| Macro | Purpose |
+|---|---|
+| `BM_REGISTER_EXTERN(ClassName)` | Register the extern type under the same name as the class. |
+| `BM_REGISTER_EXTERN_W_NAME(p4_name, ClassName)` | Register under a custom P4-visible name. |
+| `BM_REGISTER_EXTERN_METHOD(ClassName, method_name, ...arg_types)` | Expose an instance method as a callable from P4 actions. |
+| `BM_REGISTER_EXTERN_FUNCTION(function_name, ...arg_types)` | Register a free function as a P4-callable extern function. |
+
+The extern type must be default-constructible — the factory calls the default constructor, then sets attributes via `_set_attribute()` before calling `init()`.
+
+## Working example: custom_extern
+
+The repository includes a complete worked example in `examples/custom_extern/`. It defines one extern function (`custom_set`) and one extern object (`CustomCounter`).
+
+### C++ implementation
+
+`extern_lib/definition.cpp` contains the full implementation:
+
+<CodeGroup>
+
+```cpp extern_lib/definition.cpp
+#include <bm/bm_sim/extern.h>
+
+// Extern function: copies value b into a.
+void custom_set(bm::Data &a, const bm::Data &b) {
+    a.set(b);
+}
+BM_REGISTER_EXTERN_FUNCTION(custom_set, bm::Data &, const bm::Data &);
+
+// Extern object: a simple counter with reset, read, and increment.
+class CustomCounter : public bm::ExternType {
+ public:
+  BM_EXTERN_ATTRIBUTES {
+    BM_EXTERN_ATTRIBUTE_ADD(init_count);  // declared in P4 constructor
+  }
+
+  void init() override {
+    reset();
+  }
+
+  void reset() {
+    count = init_count;
+  }
+
+  void read(bm::Data &out) const {
+    out = count;
+  }
+
+  void increment_by(const bm::Data &amount) {
+    count.set(count.get<size_t>() + amount.get<size_t>());
+  }
+
+ private:
+  bm::Data init_count{0};
+  bm::Data count{0};
+};
+
+BM_REGISTER_EXTERN(CustomCounter);
+BM_REGISTER_EXTERN_METHOD(CustomCounter, reset);
+BM_REGISTER_EXTERN_METHOD(CustomCounter, read, bm::Data &);
+BM_REGISTER_EXTERN_METHOD(CustomCounter, increment_by, const bm::Data &);
+```
+
+```makefile extern_lib/Makefile
+CXX      = g++
+CXXFLAGS = -Wall -Wextra -g -O2 -fPIC
+LDFLAGS  = -shared
+
+definition.so: definition.cpp
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $<
+```
+
+</CodeGroup>
+
+<Note>
+  Compile with `-fPIC` and `-shared`. The resulting `.so` has no `main` — it is loaded into the switch process by `--load-modules`.
+</Note>
+
+### P4 declaration
+
+The P4 program declares the extern interface in a separate file that is `#include`d. bmv2 resolves the implementation at runtime.
+
+```p4 extern_lib/declaration.p4
+// Extern function declaration.
+extern void custom_set<T>(inout T a, in T b);
+
+// Extern object declaration.
+extern CustomCounter<T> {
+    CustomCounter(T init_count);
+    void reset();
+    void read(out T count);
+    void increment_by(in T amount);
+}
+```
+
+### Using the extern in a P4 program
+
+```p4 example.p4
+#include <core.p4>
+#include <v1model.p4>
+#include "extern_lib/declaration.p4"
+
+// ...headers and metadata omitted...
+
+control MyIngress(
+    inout header_t hdr,
+    inout metadata_t meta,
+    inout standard_metadata_t std_meta
+) {
+    // Instantiate the counter with initial value 0x01.
+    CustomCounter<bit<8>>(0x01) custom_counter;
+    bit<8> count;
+
+    apply {
+        custom_set(hdr.test.a, 0xbd);       // extern function call
+
+        custom_counter.increment_by(0x10);  // extern method call
+        custom_counter.read(count);
+        custom_set(hdr.test.b, count);
+
+        custom_counter.reset();
+        custom_counter.read(count);
+        custom_set(hdr.test.c, count);
+
+        std_meta.egress_spec = 1;
+    }
+}
+```
+
+## Step-by-step: build and load an extern
+
+<Steps>
+  <Step title="Implement the C++ class">
+    Create a `.cpp` file. Include `<bm/bm_sim/extern.h>`, subclass `bm::ExternType`, and implement `_register_attributes()` plus any methods you want to expose.
+  </Step>
+
+  <Step title="Register the type and methods">
+    After the class definition, add the registration macros:
+
+    ```cpp
+    BM_REGISTER_EXTERN(MyExtern);
+    BM_REGISTER_EXTERN_METHOD(MyExtern, my_method, bm::Data &);
+    ```
+
+    Each method registration generates an `ActionPrimitive` that bmv2's JSON loader can resolve by name.
+  </Step>
+
+  <Step title="Build as a shared library">
+    ```bash
+    g++ -Wall -fPIC -shared -o libmyextern.so myextern.cpp \
+        $(pkg-config --cflags libbm)
+    ```
+
+    You do not need to link against `libbm` — the symbols are already present in the switch process and will be resolved at load time.
+  </Step>
+
+  <Step title="Declare the extern in P4">
+    Write an `extern` declaration block in a `.p4` header file. This file is `#include`d by your P4 program but does not contain any implementation. The p4c compiler needs the declaration to type-check method calls; the JSON it emits contains only names, which bmv2 resolves against registered primitives.
+
+    Compile your P4 program with `--emit-externs`:
+
+    ```bash
+    p4c-bm2-ss --emit-externs -o program.json program.p4
+    ```
+  </Step>
+
+  <Step title="Load with --load-modules">
+    Pass the `.so` path to `simple_switch` via `--load-modules`. This is a target-specific option; pass it after the JSON file or after `--`:
+
+    ```bash
+    sudo simple_switch -i 0@veth0 -i 1@veth2 program.json \
+        -- --load-modules=extern_lib/definition.so
+    ```
+
+    For multiple libraries, use a comma-separated list:
+
+    ```bash
+    -- --load-modules=lib1.so,lib2.so
+    ```
+
+    If the `.so` is not on the standard library search path, set `LD_LIBRARY_PATH` first:
+
+    ```bash
+    export LD_LIBRARY_PATH=/path/to/libs:$LD_LIBRARY_PATH
+    sudo -E simple_switch -i 0@veth0 program.json \
+        -- --load-modules=libmyextern.so
+    ```
+  </Step>
+</Steps>
+
+<AccordionGroup>
+  <Accordion title="Why does the extern class need to be default-constructible?">
+    bmv2's `ExternFactoryMap` stores a factory lambda that calls `new ExternType()`. Attributes (constructor arguments declared in P4) are set after construction via `_set_attribute()`, before `init()` is called. If your class cannot be default-constructed, the factory registration macro will produce a `static_assert` failure.
+  </Accordion>
+
+  <Accordion title="Can I access packet fields from an extern method?">
+    Yes. Inside any extern method, call `get_packet()` to obtain a reference to the `bm::Packet` being processed. From there you can read PHV fields, get port information, and so on. The packet pointer is set by the framework before your method is invoked.
+  </Accordion>
+
+  <Accordion title="How does locking work?">
+    The `BM_REGISTER_EXTERN_METHOD` macro wraps each method call with `instance->_unique_lock()`, which acquires a per-instance `std::mutex`. This means concurrent calls to the same extern instance from different packets are serialized. If you need finer-grained control, implement your own synchronization and avoid the macro (advanced use).
+  </Accordion>
+</AccordionGroup>

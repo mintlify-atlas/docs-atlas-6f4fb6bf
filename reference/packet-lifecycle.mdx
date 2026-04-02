@@ -1,0 +1,279 @@
+---
+title: "Packet lifecycle"
+description: "How packets flow through BMv2 simple_switch: the after-ingress and after-egress pseudocode, operation priority, recirculate/resubmit/clone behavior, and v1model architecture restrictions."
+keywords: ["packet lifecycle", "after-ingress", "after-egress", "clone", "resubmit", "recirculate", "multicast", "mark_to_drop", "v1model", "simple_switch"]
+---
+
+This page documents the complete packet lifecycle in BMv2 simple_switch, including the pseudocode that determines what happens to a packet at the end of ingress and egress processing, the priority of competing operations, and restrictions imposed by the v1model architecture.
+
+## After-ingress pseudocode
+
+At the end of ingress processing, simple_switch evaluates the following logic to determine what happens to the packet.
+
+<Tabs>
+  <Tab title="Short version">
+    ```text
+    if (a clone primitive action was called) {
+        create clone(s) of the packet with details configured for the clone session
+    }
+    if (digest to generate) {   // because your code called generate_digest
+        send a digest message to the control plane software
+    }
+    if (resubmit was called) {
+        start ingress processing over again for the original packet
+    } else if (mcast_grp != 0) {  // because your code assigned a value to mcast_grp and
+                                  // did not call mark_to_drop afterwards
+        multicast the packet to the output port(s) configured for group mcast_grp
+    } else if (egress_spec == DROP_PORT) {  // e.g. because your code called drop/mark_to_drop
+        Drop packet.
+    } else {
+        unicast the packet to the port equal to egress_spec
+    }
+    ```
+  </Tab>
+  <Tab title="Long version">
+    ```text
+    if (a clone primitive action was called) {
+        // True if your code called clone/clone_preserving_field_list (P4_16)
+        // or clone_ingress_pkt_to_egress (P4_14) during ingress processing.
+
+        Create zero or more clones of the packet. The cloned packet(s) will be
+        enqueued in the packet buffer, destined for the egress port(s) configured
+        in the clone session whose numeric id was given as the value of the
+        `session` parameter when the last clone primitive action was called.
+
+        Each cloned packet will later perform egress processing, independently
+        from whatever the original packet does next.
+
+        The contents of the cloned packet(s) will be the same as the packet
+        when it most recently began ingress processing, without any modifications
+        made during that ingress execution. (If the packet arrived via recirculate,
+        the clone reflects the state after the most recent recirculate, not the
+        original packet.)
+
+        If it was a clone_preserving_field_list (P4_16) or
+        clone_ingress_pkt_to_egress (P4_14) action, also preserve the final
+        ingress values of the metadata fields specified in the field list argument.
+        The value of instance_type will be PKT_INSTANCE_TYPE_INGRESS_CLONE.
+
+        Each cloned packet will be processed by your parser code again, then
+        continue at the beginning of your egress code.
+        // fall through to code below
+    }
+    if (digest to generate) {
+        // True if your code called the generate_digest primitive action
+        // during ingress processing.
+        Send a digest message to the control plane containing the values of
+        the fields in the specified field list.
+        // fall through to code below
+    }
+    if (resubmit was called) {
+        // True if your code called resubmit_preserving_field_list (P4_16)
+        // or resubmit (P4_14) during ingress processing.
+        Start ingress over again for this packet, with its original unmodified
+        packet contents and metadata values. Preserve the final ingress values
+        of any user-defined metadata fields in the field list given to the last
+        resubmit call. The resubmitted packet will have instance_type equal to
+        PKT_INSTANCE_TYPE_RESUBMIT.
+    } else if (mcast_grp != 0) {
+        // True if your code assigned a value to standard_metadata.mcast_grp
+        // during ingress AND did not call mark_to_drop afterwards.
+        Make 0 or more copies of the packet (including all metadata) based on
+        the list of (egress_port, egress_rid) values configured by the control
+        plane for the mcast_grp value. Enqueue each in the appropriate packet
+        buffer queue. The instance_type of each will be
+        PKT_INSTANCE_TYPE_REPLICATION.
+    } else if (egress_spec == DROP_PORT) {
+        // True if your code called mark_to_drop (P4_16) or drop (P4_14)
+        // during ingress processing.
+        Drop packet.
+    } else {
+        Enqueue one copy of the packet destined for egress_port equal to egress_spec.
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Operation priority
+
+The after-ingress logic evaluates in the following order. Later conditions in the `else if` chain are only reached if earlier conditions are false:
+
+1. **Clone** — always happens first, independently of all other operations
+2. **Digest** — sent to the control plane, independent of what happens to the original packet
+3. **Resubmit** — takes priority over multicast, drop, and unicast
+4. **Multicast** (`mcast_grp != 0`) — takes priority over drop and unicast
+5. **Drop** (`egress_spec == DROP_PORT`) — takes priority over unicast
+6. **Unicast** — the default if none of the above apply
+
+<Note>
+  Clone and digest are not mutually exclusive with each other or with the resubmit/multicast/drop/unicast path. A single packet can trigger a clone, send a digest, and still be resubmitted, multicast, dropped, or unicast — all in one ingress execution.
+</Note>
+
+---
+
+## After-egress pseudocode
+
+At the end of egress processing, simple_switch evaluates the following logic.
+
+<Tabs>
+  <Tab title="Short version">
+    ```text
+    if (a clone primitive action was called) {
+        create clone(s) of the packet with details configured for the clone session
+    }
+    if (egress_spec == DROP_PORT) {  // e.g. because your code called drop/mark_to_drop
+        Drop packet.
+    } else if (recirculate was called) {
+        after deparsing, deparsed packet starts over again as input to parser
+    } else {
+        Send the packet to the port in egress_port.
+    }
+    ```
+  </Tab>
+  <Tab title="Long version">
+    ```text
+    if (a clone primitive action was called) {
+        // True if your code called clone/clone_preserving_field_list (P4_16)
+        // or clone_egress_pkt_to_egress (P4_14) during egress processing.
+
+        Create zero or more clones of the packet. The cloned packet(s) will be
+        enqueued in the packet buffer, destined for the egress port(s) configured
+        in the clone session.
+
+        Each cloned packet will later perform egress processing independently.
+
+        The contents of the cloned packet(s) will be as they are at the end of
+        egress processing, including all changes made during ingress and egress.
+        Your deparser code will NOT be executed for egress-to-egress cloned packets,
+        nor will your parser code be executed for them.
+
+        If it was a clone_preserving_field_list (P4_16) or
+        clone_egress_pkt_to_egress (P4_14) action, also preserve the final egress
+        values of the metadata fields in the field list argument. The value of
+        instance_type will be PKT_INSTANCE_TYPE_EGRESS_CLONE. Each cloned packet
+        will have its standard_metadata fields initialized as for all packets
+        beginning egress processing (egress_port, egress_spec,
+        egress_global_timestamp, etc.).
+
+        Each cloned packet will continue processing at the beginning of your egress code.
+        // fall through to code below
+    }
+    if (egress_spec == DROP_PORT) {
+        // True if your code called mark_to_drop (P4_16) or drop (P4_14)
+        // during egress processing.
+        Drop packet.
+    } else if (recirculate was called) {
+        // True if your code called recirculate_preserving_field_list (P4_16)
+        // or recirculate (P4_14) during egress processing.
+        Start processing the packet over again. Take the packet as constructed
+        by the deparser — with modifications made during both ingress and egress —
+        and give it as input to the parser. Preserve the final egress values of
+        any fields whose field list id is given to the last recirculate call.
+        The instance_type of the recirculated packet will be
+        PKT_INSTANCE_TYPE_RECIRC.
+    } else {
+        Send the packet to the port in egress_port. Because egress_port is
+        read only during egress processing, its value must have been determined
+        during ingress processing for normal packets. Exception: a clone operation
+        during egress processing has its egress_port determined by the control
+        plane configuration for that clone session.
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Recirculate, resubmit, and clone operations
+
+### Field list preservation
+
+To preserve user-defined metadata fields across these operations, annotate the fields with `@field_list(index_number)` in your P4_16 program and pass the corresponding index to `recirculate_preserving_field_list`, `resubmit_preserving_field_list`, or `clone_preserving_field_list`.
+
+<Warning>
+  The `@field_list` annotation is only supported for user-defined metadata fields. It does not work for parsed packet header fields or standard metadata fields. To preserve those values, copy them into annotated user-defined metadata fields before calling the operation.
+</Warning>
+
+<Note>
+  There may be implementation-specific issues in `p4c` if you preserve user-defined metadata fields nested one or more levels deep inside structs or headers within the user-defined metadata struct.
+</Note>
+
+### Behavioral differences
+
+<AccordionGroup>
+  <Accordion title="Resubmit">
+    The packet restarts ingress from scratch with its **original** unmodified packet contents. Only the metadata fields listed in the field list are preserved from the final ingress state. The `instance_type` is set to `PKT_INSTANCE_TYPE_RESUBMIT`.
+  </Accordion>
+  <Accordion title="Recirculate">
+    The packet is reconstructed by the deparser (reflecting all ingress and egress modifications), then fed back into the parser. Only the metadata fields listed in the field list are preserved. The `instance_type` is set to `PKT_INSTANCE_TYPE_RECIRC`.
+  </Accordion>
+  <Accordion title="Ingress-to-egress clone">
+    The clone reflects the packet **as it was when it most recently entered ingress**, without any modifications made during that ingress execution. If the `clone_preserving_field_list` form is used, the final ingress metadata values in the field list are also preserved. The clone is re-parsed and then starts egress. The `instance_type` is `PKT_INSTANCE_TYPE_INGRESS_CLONE`.
+  </Accordion>
+  <Accordion title="Egress-to-egress clone">
+    The clone reflects the packet as it is at the **end of egress processing**, including all changes. The deparser and parser are **not** re-run for the clone. If the `clone_preserving_field_list` form is used, the final egress metadata values in the field list are preserved. The `instance_type` is `PKT_INSTANCE_TYPE_EGRESS_CLONE`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## BMv2 v1model restrictions
+
+The following restrictions apply specifically to P4_16 programs using the v1model architecture on BMv2 simple_switch.
+
+### Tables
+
+`simple_switch` does not support applying the same table more than once in a single execution of the `Ingress` or `Egress` control. Each table may be applied at most once per pipeline execution.
+
+<Tip>
+  Work around this restriction by defining multiple tables with identical structure and keeping their entries synchronized in your control plane software.
+</Tip>
+
+### Parser
+
+The P4_16 language specification (v1.1) does not support `if` statements inside parsers. This restriction extends to functions called from a parser (because `p4c` inlines function calls).
+
+Workarounds:
+- Defer conditional logic to the `Ingress` control where `if` statements are fully supported.
+- Use `transition select` statements to branch to different parser states, each with its own code.
+
+Packets that reach the `reject` parser state (for example, because a `verify` call failed) are **not** automatically dropped. They begin ingress processing with `parser_error` set to the error that occurred. Explicitly transitioning to the `reject` state in source code is not supported — it can only happen via a failing `verify` call.
+
+### `VerifyChecksum` control
+
+The `VerifyChecksum` control runs after the parser and before ingress. It may contain only a sequence of calls to `verify_checksum` or `verify_checksum_with_payload`. No other statements are supported.
+
+A packet with an incorrect checksum is **not** automatically dropped. It enters ingress with `checksum_error` set to `1`. Your ingress code must explicitly drop it if desired.
+
+### `Ingress` and `Egress` controls
+
+Each table may be applied (`apply`'d) at most once per execution of these controls. Applying a table more than once in a single pipeline execution is not supported.
+
+### `ComputeChecksum` control
+
+The `ComputeChecksum` control runs after egress and before the deparser. It may contain only a sequence of calls to `update_checksum` or `update_checksum_with_payload`. No other statements are supported.
+
+<Tip>
+  If you need more complex logic, place it near the end of the `Egress` control before `ComputeChecksum` runs.
+</Tip>
+
+### `Deparser` control
+
+The `Deparser` control may contain only a sequence of calls to the `emit` method of the `packet_out` object. No other statements are supported.
+
+### Type `H` (headers struct)
+
+The type `H` passed to the `V1Switch` package must be a struct whose members are exclusively of these types:
+
+- `header`
+- `header_union`
+- `header stack`
+
+No other member types are permitted.
+
+---
+
+## Related
+
+- [Standard metadata](/reference/standard-metadata) — `egress_spec`, `instance_type`, and other fields that control packet fate
+- [Intrinsic metadata](/reference/intrinsic-metadata) — `mcast_grp`, `egress_rid`, and queueing fields

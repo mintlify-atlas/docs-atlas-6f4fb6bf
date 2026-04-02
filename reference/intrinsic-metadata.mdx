@@ -1,0 +1,229 @@
+---
+title: "Intrinsic metadata"
+description: "Reference for the intrinsic_metadata and queueing_metadata headers used in BMv2 simple_switch, including table match kinds and const entries syntax."
+keywords: ["intrinsic_metadata", "queueing_metadata", "mcast_grp", "egress_rid", "ingress_global_timestamp", "match_kind", "const entries", "v1model"]
+---
+
+BMv2 simple_switch defines two additional metadata headers beyond `standard_metadata_t`: `intrinsic_metadata` and `queueing_metadata`. These headers enable advanced features such as multicast, timestamping, and queue inspection.
+
+<Note>
+  In a P4_16 program using the v1model architecture, all fields from both headers are already part of `standard_metadata_t` — no additional struct definitions are needed. In P4_14 programs, you must define and instantiate these headers yourself.
+</Note>
+
+## `intrinsic_metadata` header
+
+These fields are required to enable features such as multicast replication and global timestamping.
+
+For P4_14 programs, define the header as follows:
+
+```p4 P4_14 header definition
+header_type intrinsic_metadata_t {
+    fields {
+        ingress_global_timestamp : 48;
+        egress_global_timestamp : 48;
+        mcast_grp : 16;
+        egress_rid : 16;
+    }
+}
+metadata intrinsic_metadata_t intrinsic_metadata;
+```
+
+### Fields
+
+<ParamField path="ingress_global_timestamp" type="bit<48>">
+  A timestamp in microseconds, set when the packet arrives at ingress. The clock starts at 0 each time the switch process starts.
+
+  This field can be read from either the ingress or egress pipeline, but must not be written to.
+
+  <Warning>
+    Timestamps are not synchronized across separate `simple_switch` processes. Each process starts its own clock from 0. If you start two switch instances at different times, their timestamps will differ by approximately that interval. BMv2 does not implement PTP or NTP.
+  </Warning>
+</ParamField>
+
+<ParamField path="egress_global_timestamp" type="bit<48>">
+  A timestamp in microseconds, set when the packet begins egress processing. Uses the same clock as `ingress_global_timestamp`.
+
+  Read this field only from the egress pipeline. Do not write to it.
+</ParamField>
+
+<ParamField path="mcast_grp" type="bit<16>">
+  Controls multicast replication. Write this field during ingress processing to multicast the packet.
+
+  - A value of `0` means no multicast.
+  - A nonzero value must correspond to a valid multicast group configured through the BMv2 runtime interfaces.
+  - Calling `mark_to_drop` sets this field to `0`.
+
+  <Note>
+    See the [packet lifecycle](/reference/packet-lifecycle) page for the priority of multicast relative to clone, resubmit, drop, and unicast operations at the end of ingress.
+  </Note>
+</ParamField>
+
+<ParamField path="egress_rid" type="bit<16>">
+  **(Read only in egress.)**
+
+  Used to uniquely identify individual multicast copies of the same ingress packet. Valid only in the egress pipeline.
+
+  <Note>
+    This field is named `egress_instance` in the P4_14 specification and renamed `egress_rid` in simple_switch.
+  </Note>
+</ParamField>
+
+---
+
+## `queueing_metadata` header
+
+These fields expose information about the packet buffer queue, available only during egress processing. All fields are read-only.
+
+For P4_14 programs, define the header as follows. All five fields must be defined together — this header is "all or nothing":
+
+```p4 P4_14 header definition
+header_type queueing_metadata_t {
+    fields {
+        enq_timestamp : 48;
+        enq_qdepth : 19;
+        deq_timedelta : 32;
+        deq_qdepth : 19;
+        qid : 8;
+    }
+}
+metadata queueing_metadata_t queueing_metadata;
+```
+
+### Fields
+
+<ParamField path="enq_timestamp" type="bit<48>">
+  A timestamp in microseconds, set when the packet is first enqueued in the packet buffer.
+</ParamField>
+
+<ParamField path="enq_qdepth" type="bit<19>">
+  The depth of the queue (in number of packets, not bytes) when the packet was first enqueued.
+</ParamField>
+
+<ParamField path="deq_timedelta" type="bit<32>">
+  The time in microseconds the packet spent in the queue.
+</ParamField>
+
+<ParamField path="deq_qdepth" type="bit<19>">
+  The depth of the queue (in number of packets, not bytes) when the packet was dequeued.
+</ParamField>
+
+<ParamField path="qid" type="bit<8>">
+  When multiple queues service each egress port (for example, when priority queueing is enabled), each queue is assigned a unique fixed id written to this field. When only a single queue is used, this field is set to `0`.
+
+  When priority queueing is enabled via `--priority-queues`, `qid` also encodes the queue's priority level: `0` is the lowest priority and `number_of_priority_queues - 1` is the highest.
+
+  <Note>
+    `qid` is not currently part of `standard_metadata_t` in `v1model.p4`. In P4_16 programs, you must define the `queueing_metadata` header yourself to access this field.
+  </Note>
+</ParamField>
+
+---
+
+## Table match kinds
+
+`simple_switch` supports the following `match_kind` values for table key fields:
+
+| Match kind | Defined in | Notes |
+| --- | --- | --- |
+| `exact` | P4_16 language spec | At most one matching entry per search key. Implemented as a hash table. |
+| `lpm` | P4_16 language spec | Longest prefix wins. Only one `lpm` field allowed per table. |
+| `ternary` | P4_16 language spec | Priority required. Control plane assigns numeric priority per entry. |
+| `optional` | `v1model.p4` | Treated like `ternary` internally. Each field can be exact-matched or wildcarded. |
+| `range` | `v1model.p4` | Priority required. A key can match multiple entries; highest numeric priority wins. |
+| `selector` | `v1model.p4` | Only valid for tables with an action selector implementation. |
+
+<Note>
+  When using the P4Runtime API, the highest numeric priority value wins for `range` and `ternary` tables. Check your control plane API documentation if using a different interface, as some use the opposite convention.
+</Note>
+
+### Table type rules
+
+<AccordionGroup>
+  <Accordion title="Exact tables">
+    A table with only `exact` fields. At most one matching entry exists for any search key — duplicate keys are not permitted. No numeric priority is needed.
+  </Accordion>
+  <Accordion title="LPM tables">
+    A table with no `range`, `ternary`, or `optional` fields but at least one `lpm` field. Exactly one `lpm` field is allowed. The matching entry with the longest prefix always wins. The control plane cannot specify priority — it is determined by prefix length.
+  </Accordion>
+  <Accordion title="Ternary tables">
+    A table with no `range` field but at least one `ternary` or `optional` field. Multiple entries can match a single search key; the control plane must assign numeric priorities. The entry with the highest numeric priority wins.
+  </Accordion>
+  <Accordion title="Range tables">
+    A table with at least one `range` field. A single search key can match multiple entries. The control plane must assign numeric priorities. The entry with the highest numeric priority wins. A `range` table may also include an `lpm` field; prefix length determines matching but does not affect priority.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## `const entries` match syntax
+
+When specifying static table entries using `const entries`, the allowed syntax depends on the `match_kind` of each key field.
+
+| Syntax | `range` | `ternary` | `optional` | `lpm` | `exact` |
+| --- | --- | --- | --- | --- | --- |
+| `lo .. hi` | yes | no | no | no | no |
+| `val &&& mask` | no | yes | no | yes | no |
+| `val` | yes | yes | yes | yes | yes |
+| `_` or `default` | yes | yes | yes | yes | no |
+
+**Notes:**
+
+- **`lo .. hi`** (range): `lo` must be ≤ `hi`. Matches if `lo <= k <= hi`.
+- **`val &&& mask`** (ternary): `val` must equal `val & mask`. Bits where mask is `1` are exact; bits where mask is `0` are wildcards.
+- **`val &&& mask`** (lpm): mask must be a prefix mask (consecutive `1` bits in most-significant positions).
+- **`val`** alone: for range fields, equivalent to `val .. val`; for ternary/lpm, equivalent to `val &&& all-ones-mask`.
+- **`_`**: matches any value. For range, equivalent to the full range; for ternary/lpm, equivalent to `0 &&& 0`.
+
+<Warning>
+  Do not write `val / prefix_length` to specify an LPM prefix in a `const entries` block. This is a valid P4_16 division expression and silently behaves as an exact match on the quotient, not a prefix match.
+</Warning>
+
+For `range` and `ternary` tables with `const entries`, the first entry listed has the highest priority, and the last has the lowest. For `lpm` tables, priority is determined by prefix length regardless of listing order.
+
+### Example
+
+```p4 P4_16 const entries example
+table t1 {
+    key = { hdr.h1.f1 : range; }
+    actions = { a; }
+    const entries = {
+         1 ..  8 : a(1);
+         6 .. 12 : a(2);  // ranges are allowed to overlap between entries
+        15 .. 15 : a(3);
+        17       : a(4);  // equivalent to 17 .. 17
+        _        : a(5);
+    }
+}
+
+table t2 {
+    key = { hdr.h1.f1 : ternary; }
+    actions = { a; }
+    const entries = {
+        0x04 &&& 0xfc : a(1);
+        0x40 &&& 0x72 : a(2);
+        0x50 &&& 0xff : a(3);
+        0xfe          : a(4);  // equivalent to 0xfe &&& 0xff
+        _             : a(5);
+    }
+}
+
+table t3 {
+    key = {
+        hdr.h1.f1 : optional;
+        hdr.h1.f2 : optional;
+    }
+    actions = { a; }
+    const entries = {
+        // Multi-field keys require parentheses
+        (47, 72) : a(1);
+        ( _, 72) : a(2);
+        (49,  _) : a(4);
+        _        : a(5);
+    }
+}
+```
+
+## Related
+
+- [Standard metadata](/reference/standard-metadata) — `standard_metadata_t` fields
+- [Packet lifecycle](/reference/packet-lifecycle) — how `mcast_grp` interacts with clone, resubmit, drop, and unicast at the end of ingress

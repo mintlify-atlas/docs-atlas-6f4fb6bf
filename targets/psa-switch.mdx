@@ -1,0 +1,139 @@
+---
+title: "psa_switch"
+description: "A BMv2 target implementing the Portable Switch Architecture (PSA). Partial implementation — not all PSA features are supported."
+keywords: ["psa_switch", "PSA", "Portable Switch Architecture", "P4_16", "bmv2"]
+---
+
+`psa_switch` is a BMv2 target that implements the [Portable Switch Architecture (PSA)](https://p4.org/specs/), a P4\_16 architecture defined by the P4 Language Consortium. Unlike `simple_switch`, which implements the v1model architecture, `psa_switch` targets PSA — a more recent, more formally specified architecture intended to be portable across multiple switch implementations.
+
+<Warning>
+  The `psa_switch` implementation is **incomplete**. Not all PSA externs, metadata fields, and pipeline behaviors are supported. If you need a stable, fully-featured BMv2 target, use [simple\_switch](/targets/simple-switch) or [simple\_switch\_grpc](/targets/simple-switch-grpc) instead.
+</Warning>
+
+## What is PSA?
+
+The Portable Switch Architecture defines a standardized packet-processing pipeline for P4\_16 programs. Its goals are:
+
+- **Portability** — P4 programs written against PSA should be portable across multiple hardware and software switch implementations, not just BMv2.
+- **Richer metadata** — PSA defines a broader and more precise set of metadata fields compared to v1model.
+- **Cleaner abstractions** — PSA formalizes packet paths (normal, clone-ingress-to-egress, clone-egress-to-egress, resubmit, recirculate) with explicit type-safe metadata structs rather than the unified `standard_metadata` approach of v1model.
+
+The PSA specification is published at [p4.org/specs](https://p4.org/specs/).
+
+## How psa_switch differs from simple_switch
+
+| Aspect | simple\_switch | psa\_switch |
+|---|---|---|
+| Architecture | v1model | PSA |
+| P4\_14 support | Yes | No |
+| Metadata header | `standard_metadata_t` | Per-path structs (`ingress_intrinsic_metadata_t`, etc.) |
+| Packet paths | Implicit pseudocode | Explicit PSA-defined paths |
+| Extern types | v1model externs | PSA externs (`PSA_Counter`, `PSA_Meter`, `PSA_Hash`, `PSA_Random`, `PSA_InternetChecksum`) |
+| Recirculate port | Configurable drop port logic | `PSA_PORT_RECIRCULATE` (0xfffffffa) |
+| Priority queuing | Enabled with `--priority-queues` | Compile-time flag only (disabled by default) |
+| Implementation status | Stable | Partial |
+
+## PSA pipeline
+
+The PSA pipeline consists of two separate pipelines, each with their own parser, control, and deparser:
+
+```
+Ingress pipeline:
+  IngressParser → Ingress control → IngressDeparser
+
+Egress pipeline:
+  EgressParser → Egress control → EgressDeparser
+```
+
+Between ingress and egress sits a **Traffic Manager** that handles queuing, multicast replication, and scheduling. The PSA architecture explicitly defines separate metadata structs for each stage and each packet path, making the data flow more explicit than in v1model.
+
+## Supported externs
+
+The `psa_switch` implementation includes the following PSA extern types:
+
+<CardGroup cols={2}>
+  <Card title="PSA_Counter" icon="chart-bar">
+    Indexed counter array. Supports both byte and packet counting. Readable and writable via the Thrift API.
+  </Card>
+  <Card title="PSA_Meter" icon="gauge">
+    Token-bucket rate limiter. Supports byte-mode and packet-mode.
+  </Card>
+  <Card title="PSA_Hash" icon="hashtag">
+    Hash function extern. Computes a hash over a field list.
+  </Card>
+  <Card title="PSA_Random" icon="dice">
+    Pseudo-random number generation.
+  </Card>
+  <Card title="PSA_InternetChecksum" icon="shield-check">
+    Incremental Internet checksum computation, as defined in the PSA specification.
+  </Card>
+</CardGroup>
+
+<Note>
+  PSA registers and action profiles are not yet fully implemented in `psa_switch`. Check the [GitHub repository](https://github.com/p4lang/behavioral-model) for current status before relying on any specific PSA extern.
+</Note>
+
+## Compiling a PSA program
+
+To compile a P4\_16 program for `psa_switch`, use the `psa` architecture target in `p4c`:
+
+<Steps>
+  <Step title="Write a PSA P4_16 program">
+    Your program must include the PSA architecture file and instantiate the `PSA_Switch` package:
+
+    ```p4
+    #include <core.p4>
+    #include <psa.p4>
+
+    // ... headers, metadata, parsers, controls ...
+
+    PSA_Switch(
+        IngressPipeImpl(),
+        PacketReplicationEngine(),
+        EgressPipeImpl(),
+        BufferingQueueingEngine()
+    ) main;
+    ```
+  </Step>
+  <Step title="Compile with p4c">
+    ```bash
+    p4c --target bmv2 --arch psa --std p4-16 my_psa_program.p4 -o my_psa_program.json
+    ```
+  </Step>
+  <Step title="Run psa_switch">
+    ```bash
+    sudo psa_switch -i 0@veth0 -i 1@veth1 my_psa_program.json
+    ```
+  </Step>
+  <Step title="Use the control CLI">
+    `psa_switch` ships with a CLI tool (`pswitch_CLI`) based on the same Thrift infrastructure as `simple_switch_CLI`:
+
+    ```bash
+    pswitch_CLI --thrift-port 9090
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  The `p4c` PSA backend for BMv2 is also under active development. Not all valid PSA programs will compile successfully or behave correctly end-to-end. You may encounter both compiler and runtime issues.
+</Warning>
+
+## Current implementation status
+
+As of the original implementation (November 2018), the `psa_switch` target was explicitly marked as incomplete. Key known limitations:
+
+- Not all PSA extern types are implemented
+- Priority queuing is disabled by default and requires a compile-time flag to enable
+- The `p4c` BMv2 PSA backend has additional gaps in what it can compile
+- P4Runtime support is not included — `psa_switch` uses only the Thrift control API
+- Some PSA metadata fields and intrinsic metadata structs may not behave as the PSA specification defines
+
+<Note>
+  If you want to contribute to completing the PSA implementation in BMv2 or `p4c`, open an issue in the [behavioral-model repository](https://github.com/p4lang/behavioral-model) or the [p4c repository](https://github.com/p4lang/p4c) to coordinate with the maintainers.
+</Note>
+
+## Relationship to simple_switch
+
+`psa_switch` and `simple_switch` share the same underlying BMv2 framework (packet I/O infrastructure, Thrift runtime, JSON loading, etc.) but implement different P4 architectures. The same P4 program cannot be used for both targets without rewriting it, because the metadata types, extern interfaces, and package definitions are different between v1model and PSA.
+
+If you are migrating from v1model to PSA or vice versa, you need to rewrite the architecture-specific portions of your P4 program (parsers, controls, metadata declarations, and package instantiation).

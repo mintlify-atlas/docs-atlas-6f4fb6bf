@@ -1,0 +1,56 @@
+---
+title: "Targets overview"
+description: "BMv2 ships with three target architectures. Learn what each one does and when to use it."
+keywords: ["simple_switch", "simple_switch_grpc", "psa_switch", "v1model", "P4Runtime", "PSA"]
+---
+
+A BMv2 **target** is a compiled binary that implements a specific P4 switch architecture. Each target loads a compiled P4 JSON file and processes packets according to the architecture that JSON was written against.
+
+BMv2 ships with three supported targets:
+
+<CardGroup cols={3}>
+  <Card title="simple_switch" icon="server" href="/targets/simple-switch">
+    The reference implementation of the v1model architecture. Supports P4\_14 and P4\_16. Uses a Thrift-based control API on port 9090. The right choice for most development and testing work.
+  </Card>
+  <Card title="simple_switch_grpc" icon="network-wired" href="/targets/simple-switch-grpc">
+    Extends simple\_switch with a P4Runtime gRPC API on port 9559. Use this when your controller speaks P4Runtime, or when you need to interoperate with standard SDN tooling.
+  </Card>
+  <Card title="psa_switch" icon="flask" href="/targets/psa-switch">
+    A partial implementation of the Portable Switch Architecture (PSA). Under active development. Use only if you are specifically targeting the PSA architecture and can tolerate an incomplete feature set.
+  </Card>
+</CardGroup>
+
+## Comparison
+
+| Feature | simple\_switch | simple\_switch\_grpc | psa\_switch |
+|---|---|---|---|
+| Architecture | v1model | v1model | PSA |
+| P4\_14 support | Yes | Yes | No |
+| P4\_16 support | Yes | Yes | Yes |
+| Control API | Thrift (port 9090) | P4Runtime gRPC (port 9559) | Thrift |
+| Thrift API | Yes (primary) | Optional (`--with-thrift`) | Yes |
+| P4Runtime API | No | Yes (primary) | No |
+| gNMI / OpenConfig | No | Experimental | No |
+| Status | Stable | Stable | Partial |
+| Recommended | General use | P4Runtime controllers | PSA research |
+
+## Choosing a target
+
+<AccordionGroup>
+  <Accordion title="I am learning P4 or building a prototype">
+    Use **simple\_switch**. It has the broadest compatibility, the most documentation, and works out of the box with the `simple_switch_CLI`. The Thrift API is easy to drive from Python controller scripts.
+  </Accordion>
+  <Accordion title="I need a standards-based control API">
+    Use **simple\_switch\_grpc**. It implements the [P4Runtime API](https://p4.org/specs/), which is the industry-standard gRPC-based interface for controlling P4 devices. This is the right choice when integrating with ONOS, Stratum, or any controller that speaks P4Runtime.
+  </Accordion>
+  <Accordion title="I am targeting the PSA architecture">
+    Use **psa\_switch** — but be aware that the implementation is incomplete. Not all PSA externs and features are supported. Check the [PSA switch page](/targets/psa-switch) for current status before committing to this target.
+  </Accordion>
+  <Accordion title="I have existing P4_14 programs">
+    Use **simple\_switch**. It supports P4\_14 programs directly, and the `p4c` compiler can also auto-translate P4\_14 to P4\_16 using the v1model architecture if you want to migrate.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The `simple_router` and `l2_switch` targets also exist in the repository but are provided only for illustrative purposes. They implement much smaller feature sets and cannot be used with P4\_16 programs. There is no good reason to use them over `simple_switch`.
+</Note>

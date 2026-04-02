@@ -1,0 +1,165 @@
+---
+title: "Performance"
+description: "BMv2 is a development tool, not a production switch. Understand its throughput characteristics, what affects performance, and how to configure it for maximum speed."
+sidebarTitle: "Performance"
+keywords: ["performance", "throughput", "latency", "benchmark", "optimization", "bmv2"]
+---
+
+<Warning>
+  BMv2 is **not** a production-grade software switch. It is designed for
+  developing, testing, and debugging P4 data planes — not for carrying live
+  traffic. Throughput and latency are significantly lower than production switches
+  like [Open vSwitch](https://www.openvswitch.org/).
+</Warning>
+
+Under optimal conditions (best build flags, simple P4 program, baremetal Linux),
+you can expect roughly **~1 Gbps / 80,000 pps**. Performance is inconsistent and
+depends on many factors described below.
+
+## What impacts performance
+
+<AccordionGroup>
+  <Accordion title="P4 program complexity">
+    The simpler the program — fewer parsed and deparsed headers, fewer
+    match-action tables, simpler expressions — the higher the throughput and the
+    lower the latency. Every additional header extraction and table lookup adds
+    processing time per packet.
+  </Accordion>
+
+  <Accordion title="P4 compiler used">
+    The legacy [p4c-bm](https://github.com/p4lang/p4c-bm) compiler tends to
+    produce faster JSON files than the reference [p4c](https://github.com/p4lang/p4c)
+    compiler, because it generates simpler arithmetic expressions and fewer field
+    copies. However, `p4c-bm` is no longer maintained and only supports P4_14
+    programs. Use `p4c` for all new development.
+  </Accordion>
+
+  <Accordion title="Build flags">
+    Build flags have a **massive** impact on performance. See
+    [Best build flags for performance](#best-build-flags-for-performance) below
+    for the recommended configuration.
+  </Accordion>
+
+  <Accordion title="Table type and number of entries">
+    Exact-match and LPM tables are not significantly affected by the number of
+    entries. Ternary match tables can significantly degrade throughput as the
+    number of entries grows, because lookups must scan all entries. However, if
+    successive packets hit the same ternary entry, the internal flow cache may
+    help.
+  </Accordion>
+
+  <Accordion title="Traffic pattern and input/output ports">
+    `simple_switch` can take advantage of multiple CPU cores when packets arrive
+    on different input ports and leave on different output ports. Sending all
+    traffic through a single port pair limits parallelism.
+
+    For ternary tables: if all packets belong to the same "flow" (hit the same
+    entry), the flow cache can provide significantly better performance regardless
+    of the total number of entries.
+  </Accordion>
+
+  <Accordion title="Hardware and virtualization">
+    Bare-metal Linux gives the best results. Running inside a VM degrades
+    performance, and the degree of degradation depends on the hypervisor and the
+    host OS. Some hypervisors on macOS hosts cause significant underutilization
+    of CPU, likely due to I/O bottlenecks.
+
+    More CPU cores and larger CPU caches both help, especially when traffic
+    arrives on multiple ports.
+  </Accordion>
+</AccordionGroup>
+
+## Best build flags for performance
+
+Do a fresh clone and run `./configure` with the following flags:
+
+```bash
+./configure 'CXXFLAGS=-g -O3' 'CFLAGS=-g -O3' --disable-logging-macros --disable-elogger
+make
+```
+
+| Flag                       | Effect                                                                             |
+| -------------------------- | ---------------------------------------------------------------------------------- |
+| `CXXFLAGS=-g -O3`          | Enable compiler optimizations while retaining debug symbols                        |
+| `CFLAGS=-g -O3`            | Same for C code                                                                    |
+| `--disable-logging-macros` | Removes all debug logging calls from the binary; eliminates their overhead         |
+| `--disable-elogger`        | Removes the nanomsg event logger; eliminates its overhead                          |
+
+<Note>
+  `--disable-logging-macros` and `--disable-elogger` make the binary harder to
+  debug. Use these flags only when measuring performance or running sustained
+  load tests, not during active P4 development.
+</Note>
+
+## Running the Mininet benchmark
+
+BMv2 ships with a Mininet-based benchmark. It creates a two-host topology
+connected through one `simple_switch` instance running the `simple_router.p4`
+program, installs table entries for L3 connectivity, and measures TCP throughput
+with iperf.
+
+**Prerequisites:** Mininet, iperf, and ethtool must be installed.
+
+```bash
+cd mininet
+python3 stress_test_ipv4.py
+```
+
+### Example output
+
+```
+Ready !
+*** Ping: testing ping reachability
+h1 -> h2
+h2 -> h1
+*** Results: 0% dropped (2/2 received)
+Running iperf measurement 1 of 5
+1056 Mbps
+Running iperf measurement 2 of 5
+1056 Mbps
+Running iperf measurement 3 of 5
+1047 Mbps
+Running iperf measurement 4 of 5
+1042 Mbps
+Running iperf measurement 5 of 5
+1041 Mbps
+Median throughput is 1047 Mbps
+```
+
+The results above were obtained on an AWS EC2 `c4.2xlarge` instance running
+Ubuntu 18.04.
+
+### Reproducing the benchmark on AWS
+
+If you have an AWS account, you can reproduce these results with a `c4.2xlarge`
+instance (Ubuntu 18.04 image):
+
+```bash
+git clone https://github.com/p4lang/behavioral-model.git bmv2
+cd bmv2
+./install_deps.sh
+./autogen.sh
+./configure 'CXXFLAGS=-g -O3' 'CFLAGS=-g -O3' --disable-logging-macros --disable-elogger
+make -j8
+cd mininet
+python3 stress_test_ipv4.py
+```
+
+<Warning>
+  Remember to delete your AWS instance when you are done to avoid unexpected
+  charges.
+</Warning>
+
+## Packet drops at slow rates
+
+Even when sending traffic at a low rate (for example, UDP traffic via iperf),
+you may observe packet drops at the sender's interface. This is caused by two
+interacting factors:
+
+1. **Traffic burstiness** — even "slow" UDP senders produce short bursts.
+2. **Variable per-packet processing time** — BMv2's processing time per packet
+   is not uniform; some packets take longer than others.
+
+When a burst arrives while BMv2 is still processing a previous packet, the
+ingress queue fills and drops occur. You may be able to mitigate this by
+adjusting BMv2's internal queue sizes.

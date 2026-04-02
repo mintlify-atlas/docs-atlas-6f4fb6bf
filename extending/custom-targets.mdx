@@ -1,0 +1,189 @@
+---
+title: "Custom targets"
+description: "Build a new bmv2 target by subclassing bm::Switch, wiring up a packet processing pipeline, and loading the result as a shared library at runtime."
+keywords: ["custom target", "bm::Switch", "bm::SwitchWContexts", "receive_", "start_and_return_", "pipeline", "load-modules", "bmv2"]
+---
+
+A bmv2 _target_ is a C++ program that defines a switch architecture — its pipeline stages, packet handling logic, and metadata layout — using bmv2 building blocks. The reference target is `simple_switch`, but you can create your own target to implement a custom forwarding architecture, experiment with new pipeline stages, or integrate bmv2 into a larger system.
+
+## The target model
+
+bmv2 separates the _data plane framework_ (parsers, tables, actions, deparsers, packet I/O) from the _target_ that wires those pieces together. Your target:
+
+1. Inherits from a base switch class.
+2. Overrides two pure virtual methods to receive packets and start processing threads.
+3. Retrieves `Parser`, `Pipeline`, and `Deparser` objects from the loaded JSON config and drives them in whatever order your architecture requires.
+
+## Base classes
+
+Two base classes are available in `bm/bm_sim/switch.h`:
+
+| Class | Use when |
+|---|---|
+| `bm::Switch` | Your target uses a single pipeline context (most targets). |
+| `bm::SwitchWContexts` | Your target needs multiple independent `bm::Context` objects — for example, a multi-pipeline chip. |
+
+`bm::Switch` inherits from `bm::SwitchWContexts` and removes the `cxt_id` parameter from every API call by defaulting it to `0`. Unless you specifically need multiple contexts, subclass `bm::Switch`.
+
+## Key methods to override
+
+Two pure virtual methods must be implemented in every target:
+
+```cpp
+// Called by the framework every time a packet arrives on a port.
+int receive_(port_t port_num, const char *buffer, int len) override;
+
+// Called once after init_from_command_line_options().
+// Start your processing threads here, then return immediately.
+void start_and_return_() override;
+```
+
+Two optional virtual methods can also be overridden:
+
+```cpp
+// Called when the control plane invokes reset_state().
+void reset_target_state_() override;
+
+// Called at the end of a live JSON config swap.
+// No Packet instances exist at this point.
+void swap_notify_() override;
+```
+
+### Useful helpers
+
+Inside your target implementation, these methods are available from the base class:
+
+- **`get_parser(name)`** / **`get_pipeline(name)`** / **`get_deparser(name)`** — retrieve named objects from the loaded JSON config.
+- **`new_packet_ptr(...)`** — construct a `Packet` instance for a received buffer.
+- **`add_required_field(header, field)`** — assert that the JSON config defines a required metadata field (checked at startup).
+- **`add_component<T>(ptr)`** / **`get_component<T>()`** — attach arbitrary objects to the switch for sharing across threads.
+- **`init_from_command_line_options(argc, argv)`** — parse bmv2 standard CLI options and initialize the switch.
+
+## How simple_switch uses these
+
+`SimpleSwitch` in `targets/simple_switch/simple_switch.h` subclasses `bm::Switch` and wires the standard v1model pipeline:
+
+```
+parser → ingress → packet buffer → egress → deparser
+```
+
+In `receive_()`, it wraps the incoming buffer in a `Packet`, runs the parser, and enqueues the packet for ingress processing. In `start_and_return_()`, it starts the ingress and egress worker threads.
+
+`SimpleSwitch` also calls `add_required_field` in its constructor to verify that the JSON config contains the expected `standard_metadata` fields:
+
+```cpp
+add_required_field("standard_metadata", "ingress_port");
+add_required_field("standard_metadata", "packet_length");
+add_required_field("standard_metadata", "instance_type");
+add_required_field("standard_metadata", "egress_spec");
+add_required_field("standard_metadata", "egress_port");
+```
+
+## Minimal target skeleton
+
+<CodeGroup>
+
+```cpp my_switch.h
+#include <bm/bm_sim/switch.h>
+#include <bm/bm_sim/packet.h>
+
+class MySwitch : public bm::Switch {
+ public:
+  MySwitch();
+
+ private:
+  int receive_(bm::port_t port_num,
+               const char *buffer, int len) override;
+  void start_and_return_() override;
+
+  bm::Parser    *parser{nullptr};
+  bm::Pipeline  *ingress_mau{nullptr};
+  bm::Deparser  *deparser{nullptr};
+};
+```
+
+```cpp my_switch.cpp
+#include "my_switch.h"
+
+MySwitch::MySwitch()
+    : bm::Switch(false /* enable_swap */) {
+  add_required_field("standard_metadata", "ingress_port");
+  add_required_field("standard_metadata", "egress_spec");
+}
+
+int MySwitch::receive_(bm::port_t port_num,
+                       const char *buffer, int len) {
+  auto pkt = new_packet_ptr(port_num, next_packet_id++,
+                            len, bm::PacketBuffer(len * 2, buffer, len));
+
+  // Run parser
+  parser->parse(pkt.get());
+  // Run ingress pipeline
+  ingress_mau->apply(pkt.get());
+  // Run deparser and transmit
+  deparser->deparse(pkt.get());
+  transmit_fn(port_num, pkt->get_packet_id(),
+              pkt->data(), pkt->get_data_size());
+  return 0;
+}
+
+void MySwitch::start_and_return_() {
+  parser     = get_parser("parser");
+  ingress_mau = get_pipeline("ingress");
+  deparser   = get_deparser("deparser");
+  // Start worker threads here, then return.
+}
+
+int main(int argc, char *argv[]) {
+  auto sw = new MySwitch();
+  int status = sw->init_from_command_line_options(argc, argv);
+  if (status != 0) std::exit(status);
+  sw->start_and_return();
+  // Block until the switch exits.
+  sw->wait_for_sigint();
+  return 0;
+}
+```
+
+</CodeGroup>
+
+<Note>
+  The `Parser`, `Pipeline`, and `Deparser` pointers returned by `get_parser()`, `get_pipeline()`, and `get_deparser()` are invalidated by a live JSON config swap. If you enable swap support, refresh them in `swap_notify_()`.
+</Note>
+
+## Loading shared libraries at runtime
+
+`simple_switch` and `simple_switch_grpc` support loading shared libraries at runtime via the `--load-modules` flag. This lets you ship a target extension (such as custom externs) as a `.so` without recompiling the main binary.
+
+```bash
+sudo simple_switch --load-modules lib1.so,lib2.so -i 0@eth0 my_program.json
+```
+
+`--load-modules` takes a comma-separated list of paths. The dynamic loader must be able to resolve each path — either use absolute paths or set `LD_LIBRARY_PATH` before invoking the binary:
+
+```bash
+export LD_LIBRARY_PATH=/path/to/my/libs:$LD_LIBRARY_PATH
+sudo -E simple_switch --load-modules libmyextern.so -i 0@eth0 my_program.json
+```
+
+<Warning>
+  `--load-modules` is a target-specific option. Pass it after `--` when combined with other bmv2 options, or place it at the end of the argument list — check the exact syntax for your target binary.
+</Warning>
+
+<Tip>
+  Module loading requires `dlopen` support on the host OS (available on Linux and macOS). You can enable or disable it at bmv2 configure time with `--enable-modules` / `--disable-modules`. It is on by default when `dlopen` is available.
+</Tip>
+
+## Build integration
+
+Targets are typically built as standalone executables that link against `libbmall` (or the individual `libbm_sim`, `libbm_p4pd`, etc. libraries). The standard bmv2 build system uses autoconf/automake — see `targets/simple_switch/Makefile.am` for a reference build definition.
+
+For out-of-tree targets, link with:
+
+```bash
+g++ my_switch.cpp -o my_switch \
+  $(pkg-config --cflags --libs libbm) \
+  -lboost_system -lboost_thread
+```
+
+If bmv2 was installed to a non-standard prefix, point `PKG_CONFIG_PATH` at the correct `.pc` file location.

@@ -1,0 +1,76 @@
+---
+title: "BMv2 — The Reference P4 Software Switch"
+description: "BMv2 (Behavioral Model v2) is the reference P4 software switch. It interprets compiled P4 JSON to implement programmable packet-processing pipelines for development, testing, and debugging."
+---
+
+BMv2 is a C++ framework that takes a JSON file compiled from your P4 program and interprets it to implement the packet-processing behavior you defined. It is the standard tool for P4 development — letting you iterate on your data plane without recompiling any C++ code.
+
+<Warning>
+  BMv2 is **not** a production-grade software switch. It is designed for developing, testing, and debugging P4 data planes. Throughput and latency are significantly lower than production switches like Open vSwitch.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install bmv2 from packages or build from source on Ubuntu, Debian, Fedora, or macOS.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Compile a P4 program and run it on simple_switch in minutes.
+  </Card>
+  <Card title="Targets" icon="server" href="/targets/overview">
+    Learn about simple_switch, simple_switch_grpc, psa_switch, and when to use each.
+  </Card>
+  <Card title="Control Plane" icon="terminal" href="/control-plane/runtime-cli">
+    Populate tables and configure the switch at runtime using the CLI or P4Runtime API.
+  </Card>
+</CardGroup>
+
+## How BMv2 works
+
+BMv2 decouples the switch architecture from any specific P4 program. You compile your P4 source once to a JSON representation, then load that JSON into a running bmv2 process — no C++ recompilation needed.
+
+<Steps>
+  <Step title="Write your P4 program">
+    Write a P4_16 program targeting the `v1model` architecture (or P4_14 for legacy programs).
+  </Step>
+  <Step title="Compile to JSON">
+    Use the `p4c` compiler to produce a BMv2 JSON file:
+    ```bash
+    p4c --target bmv2 --arch v1model --std p4-16 my_program.p4
+    ```
+  </Step>
+  <Step title="Run the switch">
+    Start `simple_switch` with the compiled JSON and bind it to network interfaces:
+    ```bash
+    sudo simple_switch -i 0@eth0 -i 1@eth1 my_program.json
+    ```
+  </Step>
+  <Step title="Program the control plane">
+    Use the CLI or P4Runtime to install table entries, configure multicast groups, and more:
+    ```bash
+    simple_switch_CLI --thrift-port 9090
+    ```
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Multiple target architectures" icon="layer-group" href="/targets/overview">
+    simple_switch (v1model), simple_switch_grpc (P4Runtime), and psa_switch (PSA).
+  </Card>
+  <Card title="Rich stateful objects" icon="database" href="/reference/standard-metadata">
+    Counters, meters, registers, action profiles, and action selectors built in.
+  </Card>
+  <Card title="Packet replication engine" icon="copy" href="/reference/packet-lifecycle">
+    Multicast replication, packet cloning/mirroring, resubmit, and recirculate.
+  </Card>
+  <Card title="Interactive debugger" icon="bug" href="/debugging/debugger">
+    Set breakpoints and watchpoints on P4 objects and packet fields with p4dbg.
+  </Card>
+  <Card title="Event logging" icon="list" href="/debugging/event-logging">
+    Broadcast parser transitions and table hits over nanomsg for real-time observability.
+  </Card>
+  <Card title="Extensible" icon="puzzle-piece" href="/extending/custom-externs">
+    Add custom extern objects and load shared libraries at runtime.
+  </Card>
+</CardGroup>

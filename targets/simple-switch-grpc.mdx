@@ -1,0 +1,210 @@
+---
+title: "simple_switch_grpc"
+description: "A version of simple_switch with an integrated P4Runtime gRPC API on port 9559. Use this target when your controller speaks the P4Runtime standard."
+keywords: ["simple_switch_grpc", "P4Runtime", "gRPC", "PI", "p4runtime", "grpc"]
+---
+
+`simple_switch_grpc` is a modified version of `simple_switch` that embeds a P4Runtime gRPC server. It speaks the [P4Runtime API](https://p4.org/specs/), the industry-standard gRPC interface for controlling P4 devices. This is the right target when you are building a controller that interoperates with other P4Runtime-compliant infrastructure like ONOS or Stratum.
+
+<Note>
+  `simple_switch_grpc` still runs the same v1model P4 pipeline as `simple_switch`. The only difference is the control API it exposes.
+</Note>
+
+## What it adds over simple_switch
+
+| Capability | simple\_switch | simple\_switch\_grpc |
+|---|---|---|
+| Primary control API | Thrift (port 9090) | P4Runtime gRPC (port 9559) |
+| `SetForwardingPipelineConfig` | No | Yes — load P4 JSON + P4Info at runtime |
+| Packet-in / packet-out | No | Yes — via `StreamChannel` |
+| Thrift API | Yes | Optional (`--with-thrift`) |
+| gNMI / OpenConfig | No | Experimental (requires sysrepo) |
+| Build dependency | None extra | PI library required |
+
+## Build requirements
+
+`simple_switch_grpc` requires the [PI (P4Runtime Implementation)](https://github.com/p4lang/PI) library, which provides the core P4Runtime server code. You must build and install PI before building `simple_switch_grpc`.
+
+<Steps>
+  <Step title="Install PI dependencies">
+    Follow the [PI README](https://github.com/p4lang/PI#dependencies) to install all required dependencies for the `--with-proto` configure flag.
+  </Step>
+  <Step title="Build and install PI">
+    ```bash
+    git clone https://github.com/p4lang/PI.git
+    cd PI
+    git submodule update --init --recursive
+    ./autogen.sh
+    ./configure --with-proto --without-internal-rpc --without-cli --without-bmv2
+    make
+    sudo make install
+    ```
+    Add `--with-sysrepo` if you want experimental gNMI support.
+  </Step>
+  <Step title="Build BMv2 with PI support">
+    From the root of the `behavioral-model` repository:
+    ```bash
+    ./autogen.sh
+    ./configure --with-pi
+    make
+    sudo make install
+    ```
+    Add `--without-thrift` if you do not want the Thrift server compiled in.
+  </Step>
+</Steps>
+
+## Running simple_switch_grpc
+
+The recommended way to start `simple_switch_grpc` is with `--no-p4`, so that the P4 program is loaded via the P4Runtime `SetForwardingPipelineConfig` RPC rather than at startup:
+
+```bash
+sudo simple_switch_grpc \
+    --no-p4 \
+    -i 0@veth0 \
+    -i 1@veth1 \
+    -- \
+    --grpc-server-addr 0.0.0.0:9559 \
+    --cpu-port 64
+```
+
+<Warning>
+  Options after `--` are target-specific options for `simple_switch_grpc`. Options before `--` are standard BMv2 options.
+</Warning>
+
+### Target-specific flags
+
+| Flag | Description |
+|---|---|
+| `--grpc-server-addr <addr>` | Socket address for the P4Runtime gRPC server. Accepts `host:port`, `[::1]:port`, etc. Defaults to `0.0.0.0:9559`. |
+| `--cpu-port <port>` | CPU port number for packet-in / packet-out via `StreamChannel`. Must fit in 9 bits (1–510 when using standard v1model). Not 511 (reserved as drop port). |
+
+### Standard BMv2 flags (used before `--`)
+
+| Flag | Description |
+|---|---|
+| `--no-p4` | Start without a P4 program. Pipeline must be loaded via `SetForwardingPipelineConfig`. **Recommended.** |
+| `-i <port>@<iface>` | Bind a P4 port number to a network interface. |
+| `--device-id <id>` | Device ID for this switch (default: 0). |
+| `--nanolog <ipc-addr>` | Enable nanomsg event logging. |
+| `--log-console` | Write log output to stdout. |
+
+### Example invocations
+
+<CodeGroup>
+
+```bash Minimal two-port setup
+sudo simple_switch_grpc \
+    --no-p4 \
+    -i 0@veth0 \
+    -i 1@veth1 \
+    -- \
+    --grpc-server-addr 0.0.0.0:9559 \
+    --cpu-port 64
+```
+
+```bash Specific gRPC address
+sudo simple_switch_grpc \
+    --no-p4 \
+    -i 0@eth0 \
+    -i 1@eth1 \
+    -- \
+    --grpc-server-addr 192.168.1.1:31416 \
+    --cpu-port 255
+```
+
+```bash With logging
+sudo simple_switch_grpc \
+    --no-p4 \
+    -i 0@veth0 \
+    -i 1@veth1 \
+    --log-console \
+    -- \
+    --grpc-server-addr 0.0.0.0:9559 \
+    --cpu-port 64
+```
+
+</CodeGroup>
+
+## Loading a P4 program via SetForwardingPipelineConfig
+
+When started with `--no-p4`, `simple_switch_grpc` drops all packets until a P4 program is loaded. Your controller must call the `SetForwardingPipelineConfig` RPC with:
+
+- A **P4Info** message (describes all tables, actions, counters, etc.)
+- A **ForwardingPipelineConfig** message containing the BMv2 JSON file as an opaque blob
+
+<Steps>
+  <Step title="Compile your P4 program">
+    ```bash
+    p4c --target bmv2 --arch v1model --std p4-16 \
+        my_program.p4 \
+        -o my_program.json \
+        --p4runtime-files my_program.p4info.txtpb
+    ```
+    This produces both the JSON file and the P4Info text proto.
+  </Step>
+  <Step title="Call SetForwardingPipelineConfig">
+    From your controller, issue a `SetForwardingPipelineConfig` RPC with action `VERIFY_AND_COMMIT`. Pass the P4Info proto and the JSON file bytes as the `p4_device_config` field.
+
+    Most users do this using a P4Runtime client library (Python, Go, C++). The [p4runtime-shell](https://github.com/p4lang/p4runtime-shell) tool can also do this from the command line:
+
+    ```bash
+    p4runtime-shell --grpc-addr 0.0.0.0:9559 \
+        --device-id 0 \
+        --election-id 0,1 \
+        --config my_program.p4info.txtpb,my_program.json
+    ```
+  </Step>
+  <Step title="Install table entries">
+    Once the pipeline is loaded, use `WriteRequest` RPCs (or a controller library) to add table entries, configure multicast groups, and so on.
+  </Step>
+</Steps>
+
+## Packet-in and packet-out
+
+When `--cpu-port` is set, `simple_switch_grpc` uses the P4Runtime `StreamChannel` bidirectional stream for CPU packet I/O:
+
+- **Packet-in**: packets sent to the CPU port by the P4 program are forwarded to the P4Runtime controller as `PacketIn` messages.
+- **Packet-out**: the controller sends `PacketOut` messages, which are injected into the pipeline as if they arrived on the CPU port.
+
+<Note>
+  If you do not specify `--cpu-port`, you cannot use `PacketIn` or `PacketOut`. You must set this flag to use the `StreamChannel` RPC for packet I/O.
+</Note>
+
+## Optional Thrift server
+
+By default, `simple_switch_grpc` does not include the Thrift server. You can enable it at build time with `--with-thrift`:
+
+```bash
+./configure --with-pi --with-thrift
+```
+
+Once enabled, pass `--with-thrift` at runtime to activate it:
+
+```bash
+sudo simple_switch_grpc --no-p4 -i 0@veth0 -- \
+    --grpc-server-addr 0.0.0.0:9559 \
+    --cpu-port 64 \
+    --with-thrift
+```
+
+<Warning>
+  The Thrift API and the P4Runtime API manage overlapping state (table entries, registers, etc.) independently. Writes made via Thrift are not visible to P4Runtime and vice versa. Use the Thrift server only for read-only inspection or for configuration that P4Runtime does not expose, such as `set_queue_rate`. Do not use both APIs to write table state simultaneously.
+</Warning>
+
+## gNMI and OpenConfig support
+
+`simple_switch_grpc` has experimental support for [gNMI](https://github.com/openconfig/gnmi) and a subset of [OpenConfig YANG models](https://github.com/openconfig/public), implemented via [sysrepo](https://github.com/sysrepo/sysrepo).
+
+To enable it:
+
+1. Install sysrepo and build PI with `--with-sysrepo`
+2. Build `simple_switch_grpc` with `--with-sysrepo`
+
+The following OpenConfig models are partially supported:
+
+- **openconfig-interfaces** — interface config and state, including `enabled`, `description`, `mtu`, and packet counters
+- **openconfig-if-ethernet** — Ethernet config (mostly stubs with no effect on forwarding)
+
+<Note>
+  gNMI support is experimental. Many leaf nodes are marked "stub" — the value is accepted but has no effect on BMv2 forwarding behavior. The `openconfig-platform` model is not yet implemented.
+</Note>

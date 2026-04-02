@@ -1,0 +1,399 @@
+---
+title: "Multicast and mirroring commands"
+description: "CLI commands for configuring multicast replication groups, packet cloning/mirroring sessions, and parser value sets in BMv2 simple_switch."
+keywords: ["multicast", "mc_mgrp_create", "mc_node_create", "mirroring_add", "pvs_add", "PRE", "packet replication", "BMv2", "simple_switch_CLI"]
+---
+
+These commands control the Packet Replication Engine (PRE) built into `simple_switch`. The multicast and PRE commands (`mc_*`) are available in `simple_switch_CLI`. The `mirroring_*` commands are `simple_switch_CLI` only.
+
+## Overview: multicast replication
+
+When ingress processing completes, the P4 program can set `standard_metadata.mcast_grp` to a non-zero value to trigger multicast replication. The PRE looks up the group id in the multicast table and produces zero or more `(egress_port, egress_rid)` pairs. Each copy then undergoes independent egress processing.
+
+The multicast table has two levels of objects:
+
+- **Multicast group** — identified by a group id you choose (range `[1, 65535]` for v1model; `simple_switch` supports larger values). Groups are looked up by `mcast_grp`.
+- **Multicast node** — has one `egress_rid` value and a set of `egress_port` values. One node can produce multiple copies (one per port), all with the same `egress_rid`. A node cannot send more than one copy to the same `egress_port`.
+
+<Note>
+  Nodes are identified by integer handles assigned at creation time. Groups are always identified by the group id you choose — they have no separate handle.
+</Note>
+
+---
+
+## Multicast group commands
+
+### mc_mgrp_create
+
+```
+mc_mgrp_create <group id>
+```
+
+Creates a new multicast group. The group initially has no nodes associated with it; packets multicast to an empty group are effectively dropped (0 copies made).
+
+<ParamField path="group id" type="number" required>
+  Integer multicast group id to create. For v1model programs, valid range is 1–65535.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mc_mgrp_create
+Create multicast group: mc_mgrp_create <group id>
+
+RuntimeCmd: mc_mgrp_create 1113
+Creating multicast group 1113
+```
+
+### mc_mgrp_destroy
+
+```
+mc_mgrp_destroy <group id>
+```
+
+Destroys a multicast group. It is recommended to dissociate all nodes from the group before destroying it.
+
+<ParamField path="group id" type="number" required>
+  Integer multicast group id to destroy.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mc_mgrp_destroy
+Destroy multicast group: mc_mgrp_destroy <group id>
+
+RuntimeCmd: mc_mgrp_destroy 1113
+Destroying multicast group 1113
+
+RuntimeCmd: mc_dump
+==========
+MC ENTRIES
+==========
+LAGS
+==========
+```
+
+---
+
+## Multicast node commands
+
+### mc_node_create
+
+```
+mc_node_create <rid> <space-separated port list> [ | <space-separated lag list> ]
+```
+
+Creates a multicast node with a given replication id (`rid`) and set of egress ports. Returns a node handle that must be used in subsequent commands.
+
+<ParamField path="rid" type="number" required>
+  The `egress_rid` value assigned to all copies this node produces. Corresponds to `standard_metadata.egress_rid` during egress processing.
+</ParamField>
+
+<ParamField path="port list" type="string" required>
+  Space-separated list of egress port numbers. The node produces one copy per port, all with the same `rid`. A node cannot include the same port more than once.
+</ParamField>
+
+<ParamField path="lag list" type="string">
+  Optional space-separated list of LAG (Link Aggregation Group) ids, separated from the port list by `|`.
+</ParamField>
+
+```text Example — two nodes for mcast_grp 1113
+RuntimeCmd: help mc_node_create
+Create multicast node: mc_node_create <rid> <space-separated port list> [ | <space-separated lag list> ]
+
+# Node with rid=5, ports 0 and 3 → handle 0
+RuntimeCmd: mc_node_create 5 0 3
+Creating node with rid 5 , port map 1001 and lag map
+node was created with handle 0
+
+# Node with rid=10, port 7 → handle 1
+RuntimeCmd: mc_node_create 10 7
+Creating node with rid 10 , port map 10000000 and lag map
+node was created with handle 1
+```
+
+<Tip>
+  Record the node handle printed in the output. You need it to associate, dissociate, or destroy the node. Handles are typically assigned sequentially from 0, but do not rely on this behavior.
+</Tip>
+
+### mc_node_associate
+
+```
+mc_node_associate <group id> <node handle>
+```
+
+Associates a previously created node with a multicast group. Both the group and the node must already exist. A node can only be associated with one group at a time.
+
+<ParamField path="group id" type="number" required>
+  Multicast group id (not a handle — groups use the id you specified in `mc_mgrp_create`).
+</ParamField>
+
+<ParamField path="node handle" type="number" required>
+  Node handle returned by `mc_node_create`.
+</ParamField>
+
+```text Example — associate both nodes with group 1113
+RuntimeCmd: help mc_node_associate
+Associate node to multicast group: mc_node_associate <group handle> <node handle>
+
+RuntimeCmd: mc_node_associate 1113 0
+Associating node 0 to multicast group 1113
+
+RuntimeCmd: mc_node_associate 1113 1
+Associating node 1 to multicast group 1113
+```
+
+### mc_node_dissociate
+
+```
+mc_node_dissociate <group id> <node handle>
+```
+
+Removes a node from a multicast group. The node continues to exist and may be associated with a different group afterwards.
+
+<ParamField path="group id" type="number" required>
+  Multicast group id.
+</ParamField>
+
+<ParamField path="node handle" type="number" required>
+  Node handle to dissociate.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mc_node_dissociate
+Dissociate node from multicast group: mc_node_associate <group handle> <node handle>
+
+RuntimeCmd: mc_node_dissociate 1113 0
+Dissociating node 0 from multicast group 1113
+```
+
+---
+
+## Inspecting multicast state
+
+### mc_dump
+
+```
+mc_dump
+```
+
+No parameters. Prints the current multicast configuration: all groups, and for each group, all associated nodes with their handle (`L1h`), `rid`, port lists, and LAG lists.
+
+<Note>
+  `mc_dump` only shows nodes that are currently associated with a group. Nodes that exist but are not associated with any group are not shown.
+</Note>
+
+#### Full workflow example
+
+The following session creates group 1113 to replicate to `(egress_port=0, egress_rid=5)`, `(egress_port=3, egress_rid=5)`, and `(egress_port=7, egress_rid=10)`:
+
+```text Complete multicast setup
+RuntimeCmd: mc_node_create 5 0 3
+Creating node with rid 5 , port map 1001 and lag map
+node was created with handle 0
+
+RuntimeCmd: mc_node_create 10 7
+Creating node with rid 10 , port map 10000000 and lag map
+node was created with handle 1
+
+RuntimeCmd: mc_mgrp_create 1113
+Creating multicast group 1113
+
+RuntimeCmd: mc_dump
+==========
+MC ENTRIES
+**********
+mgrp(1113)
+==========
+LAGS
+==========
+
+RuntimeCmd: mc_node_associate 1113 0
+Associating node 0 to multicast group 1113
+
+RuntimeCmd: mc_node_associate 1113 1
+Associating node 1 to multicast group 1113
+
+RuntimeCmd: mc_dump
+==========
+MC ENTRIES
+**********
+mgrp(1113)
+  -> (L1h=0, rid=5) -> (ports=[0, 3], lags=[])
+  -> (L1h=1, rid=10) -> (ports=[7], lags=[])
+==========
+LAGS
+==========
+```
+
+In this configuration, packets with `mcast_grp=1113` produce three copies:
+- `(egress_port=0, egress_rid=5)`
+- `(egress_port=3, egress_rid=5)`
+- `(egress_port=7, egress_rid=10)`
+
+---
+
+## Mirroring commands
+
+<Warning>
+  These commands are `simple_switch_CLI` only. They are not available in the generic `runtime_CLI`.
+</Warning>
+
+`simple_switch` supports 32,768 independent clone sessions, numbered 0–32,767 (also called mirroring sessions). When a P4 program calls `clone` or `clone3`, the PRE creates copies of the packet according to the clone session's configuration. By default, every session is unconfigured and produces 0 clones.
+
+### mirroring_add
+
+```
+mirroring_add <mirror_id> <egress_port>
+```
+
+Configures a clone session to send cloned packets to a single unicast egress port.
+
+<ParamField path="mirror_id" type="number" required>
+  Clone session id (0–32767).
+</ParamField>
+
+<ParamField path="egress_port" type="number" required>
+  Egress port number to send clones to.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mirroring_add
+Add mirroring session to unicast port: mirroring_add <mirror_id> <egress_port>
+
+RuntimeCmd: mirroring_add 5 7
+
+RuntimeCmd: mirroring_get 5
+MirroringSessionConfig(mgid=None, port=7)
+```
+
+### mirroring_add_mc
+
+```
+mirroring_add_mc <mirror_id> <mgrp>
+```
+
+Configures a clone session to replicate cloned packets using a multicast group. The number of clones produced is determined by the multicast group configuration.
+
+<ParamField path="mirror_id" type="number" required>
+  Clone session id (0–32767).
+</ParamField>
+
+<ParamField path="mgrp" type="number" required>
+  Multicast group id to use for replication.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mirroring_add_mc
+Add mirroring session to multicast group: mirroring_add_mc <mirror_id> <mgrp>
+
+RuntimeCmd: mirroring_add_mc 5 22
+
+RuntimeCmd: mirroring_get 5
+MirroringSessionConfig(mgid=22, port=None)
+```
+
+### mirroring_delete
+
+```
+mirroring_delete <mirror_id>
+```
+
+Returns a clone session to its original unconfigured state. Future clone operations for this session will produce 0 clones.
+
+<ParamField path="mirror_id" type="number" required>
+  Clone session id to delete.
+</ParamField>
+
+```text Example
+RuntimeCmd: help mirroring_delete
+Delete mirroring session: mirroring_delete <mirror_id>
+
+RuntimeCmd: mirroring_delete 5
+
+RuntimeCmd: mirroring_get 5
+Invalid mirroring operation (SESSION_NOT_FOUND)
+```
+
+### mirroring_get
+
+```
+mirroring_get <mirror_id>
+```
+
+Shows the current configuration of a clone session.
+
+<ParamField path="mirror_id" type="number" required>
+  Clone session id to inspect.
+</ParamField>
+
+---
+
+## Parser value set commands
+
+Parser value sets (`value_set`) allow the P4 parser to branch based on a runtime-configurable set of values. These commands manage entries in a value set.
+
+<Note>
+  The BMv2 value set implementation supports only exact match. When the value set type is a struct with multiple fields, you must concatenate the field values into a single integer whose width equals the sum of all field bitwidths (no padding).
+</Note>
+
+### pvs_add
+
+```
+pvs_add <pvs name> <value>
+```
+
+Adds an entry to a parser value set. The value must fit within the value set's compressed bitwidth. Does not warn if the value already exists.
+
+<ParamField path="pvs name" type="string" required>
+  Name of the parser value set.
+</ParamField>
+
+<ParamField path="value" type="number" required>
+  Integer value to add. Must fit within the compressed bitwidth of the value set.
+</ParamField>
+
+### pvs_remove
+
+```
+pvs_remove <pvs name> <value>
+```
+
+Removes a specific entry from a parser value set. Does not warn if the value does not exist.
+
+<ParamField path="pvs name" type="string" required>
+  Name of the parser value set.
+</ParamField>
+
+<ParamField path="value" type="number" required>
+  Integer value to remove.
+</ParamField>
+
+### pvs_get
+
+```
+pvs_get <pvs name>
+```
+
+Lists all entries currently in a parser value set.
+
+<ParamField path="pvs name" type="string" required>
+  Name of the parser value set.
+</ParamField>
+
+### pvs_clear
+
+```
+pvs_clear <pvs name>
+```
+
+Removes all entries from a parser value set.
+
+<ParamField path="pvs name" type="string" required>
+  Name of the parser value set to clear.
+</ParamField>
+
+### show_pvs
+
+```
+show_pvs
+```
+
+No parameters. Lists every parser value set in the currently loaded P4 program with its name and the expected bitwidth of entries. Use this to determine the correct integer width when calling `pvs_add`.

@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "BMv2 (Behavioral Model v2)",
+  "projectType": "framework",
+  "projectName": "BMv2 (Behavioral Model v2)",
+  "projectDescription": "The reference P4 software switch — a C++ framework for building and testing P4-programmable switch architectures.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#568d52",
-    "light": "#262020",
-    "dark": "#2ba35e"
-  },
-  "favicon": "https://media.brand.dev/8e5f0ba4-4216-4a1d-922b-5e8fd4779611.png",
-  "logo": {
-    "light": "https://media.brand.dev/f0917105-1279-419f-a816-3167ebc9b5d9.png",
-    "dark": "https://media.brand.dev/f0917105-1279-419f-a816-3167ebc9b5d9.png"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/p4lang/behavioral-model"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/p4lang/behavioral-model"
-    }
-  },
+  "primaryColor": "#568d52",
+  "lightColor": "#262020",
+  "darkColor": "#2ba35e",
   "navigation": {
     "tabs": [
       {
@@ -101,5 +84,29 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Interprets compiled P4 JSON to implement programmable packet processing pipelines",
+    "Multiple target architectures: simple_switch (v1model), simple_switch_grpc (P4Runtime), psa_switch (PSA)",
+    "Runtime control plane via Thrift CLI (simple_switch_CLI) or P4Runtime gRPC API",
+    "Built-in support for counters, meters, registers, action profiles, and action selectors",
+    "Packet replication engine with multicast, cloning/mirroring, resubmit, and recirculate",
+    "Interactive P4 debugger (p4dbg) with breakpoints and watchpoints",
+    "Event logger broadcasting parser/table events over nanomsg",
+    "Extensible via custom extern objects and dynamically loaded shared libraries",
+    "Mininet integration for multi-switch topology testing",
+    "Support for P4_14 and P4_16 programs (v1model and PSA architectures)"
+  ],
+  "publicApiSurface": [
+    "simple_switch — main software switch binary (v1model / P4_14)",
+    "simple_switch_grpc — P4Runtime gRPC-enabled switch binary",
+    "psa_switch — Portable Switch Architecture target binary",
+    "simple_switch_CLI / runtime_CLI.py — Thrift-based runtime CLI",
+    "p4dbg.py — interactive P4 debugger",
+    "nanomsg_client.py — event log consumer",
+    "bm_sim C++ library — core simulation building blocks (match tables, parser, pipeline, PHV)",
+    "bm::Switch — base class for implementing custom bmv2 targets",
+    "bm::ExternType — base class for implementing custom P4 extern objects",
+    "BMv2 JSON format — compiler output consumed by all bmv2 targets"
+  ]
 }

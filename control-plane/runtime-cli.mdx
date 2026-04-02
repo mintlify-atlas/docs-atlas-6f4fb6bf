@@ -1,0 +1,261 @@
+---
+title: "Runtime CLI"
+description: "Use the runtime CLI to populate tables, read registers, and manage state in a running BMv2 switch over the Thrift API."
+keywords: ["runtime_CLI", "simple_switch_CLI", "thrift", "table_add", "table_set_default", "register_read", "cli", "control plane"]
+---
+
+The runtime CLI connects to the Thrift RPC server embedded in each BMv2 switch process. It lets you install and remove table entries, read and write registers, inspect counters and meters, and manage multicast groups — all without restarting the switch.
+
+<Note>
+  The CLI described here targets the Thrift control API. If you are using [simple\_switch\_grpc](/targets/simple-switch-grpc), use a P4Runtime client instead — see [P4Runtime](/control-plane/p4runtime).
+</Note>
+
+## Starting the CLI
+
+<Tabs>
+  <Tab title="simple_switch_CLI">
+    `simple_switch_CLI` is the target-specific CLI for `simple_switch`. It includes all common commands plus target-only commands like `mirroring_add`, `set_queue_rate`, and `get_time_elapsed`.
+
+    ```bash
+    simple_switch_CLI --thrift-port 9090
+    ```
+  </Tab>
+  <Tab title="runtime_CLI.py">
+    `runtime_CLI.py` is the generic CLI that works with any BMv2 target. It does not include target-specific commands.
+
+    ```bash
+    ./tools/runtime_CLI.py --thrift-port 9090
+    ```
+  </Tab>
+</Tabs>
+
+`9090` is the default Thrift port. If you started the switch with a different `--thrift-port`, pass that value instead. One CLI instance connects to exactly one switch.
+
+### The --pre option
+
+The CLI uses a `--pre` flag to select which Packet Replication Engine the target uses. This determines which multicast commands are available.
+
+| Value | Description |
+|---|---|
+| `None` | No multicast support. Multicast commands are unavailable. |
+| `SimplePre` | Basic PRE. Default value. Used by `l2_switch` and other simple targets. |
+| `SimplePreLAG` | PRE with LAG (Link Aggregation Group) support. Required for `simple_switch`. |
+
+```bash
+# For simple_switch, always pass SimplePreLAG
+simple_switch_CLI --thrift-port 9090 --pre SimplePreLAG
+```
+
+<Note>
+  `simple_switch_CLI` automatically uses the correct PRE for its target. You only need `--pre` when using `runtime_CLI.py` directly.
+</Note>
+
+## Numeric value formats
+
+All numeric values in CLI commands can be expressed in several formats:
+
+| Format | Example | Notes |
+|---|---|---|
+| Decimal | `255` | Plain integer |
+| Hexadecimal | `0xff` | Prefix with `0x` |
+| IPv4 dotted decimal | `10.1.2.3` | Only for 32-bit fields |
+| IPv6 IETF notation | `1080::8:800:200C:417A` | Only for 128-bit fields |
+| MAC address | `00:12:34:56:78:9a` | Only for 48-bit fields |
+
+## Inspecting the loaded program
+
+Before installing entries, use these commands to discover what is in your P4 program:
+
+### show_tables
+
+Lists every table in the loaded P4 program, along with its implementation type (action profile, action selector, or `None`) and the list of key fields with their match kind and bit width.
+
+```
+RuntimeCmd: show_tables
+MyIngress.ipv4_lpm    [implementation=None]
+  mk=[("hdr.ipv4.dstAddr", "lpm", 32)]
+MyIngress.forward     [implementation=None]
+  mk=[("standard_metadata.egress_spec", "exact", 9)]
+```
+
+### show_actions
+
+Lists every action in the loaded P4 program with its parameter names and bit widths.
+
+```
+RuntimeCmd: show_actions
+MyIngress.set_nhop(nxt_hop_ipv4: 32, port: 9)
+MyIngress.drop()
+```
+
+## Table commands
+
+### table_add
+
+Installs a new entry in a match-action table.
+
+```
+table_add <table name> <action name> <match fields> => <action parameters> [priority]
+```
+
+Match fields must appear in the same order as the key fields in the P4 program. Action parameters must appear in the same order as in the action definition.
+
+<CodeGroup>
+
+```bash Exact match
+RuntimeCmd: table_add MyIngress.forward set_output_port 3 => 1
+```
+
+```bash LPM match
+RuntimeCmd: table_add MyIngress.ipv4_lpm set_nhop 10.1.0.0/16 => 10.1.0.1 1
+```
+
+```bash Ternary match (requires priority)
+RuntimeCmd: table_add MyIngress.acl drop 0x0800&&&0xffff => 10
+```
+
+```bash Range match (requires priority)
+RuntimeCmd: table_add MyIngress.port_range mark 1->1023 => 5
+```
+
+```bash MAC address and IPv4
+RuntimeCmd: table_add MyIngress.l2_fwd forward 00:aa:bb:cc:dd:ee => 2
+RuntimeCmd: table_add MyIngress.ipv4_lpm set_nhop 192.168.1.0/24 => 192.168.1.1 1
+```
+
+</CodeGroup>
+
+A successful `table_add` prints the handle assigned to the entry. You need this handle to delete the entry later.
+
+```
+RuntimeCmd: table_add MyIngress.ipv4_lpm set_nhop 10.0.0.0/8 => 10.0.0.1 1
+Adding entry to lpm match table MyIngress.ipv4_lpm
+match key:           LPM-10.0.0.0/8
+action:              set_nhop
+runtime data:        10.0.0.1    \x01
+Entry has been added with handle 0
+```
+
+### Match field syntax reference
+
+<AccordionGroup>
+  <Accordion title="exact">
+    Specify the value directly. No special syntax.
+
+    ```
+    10.0.0.1
+    0x0a000001
+    00:11:22:33:44:55
+    ```
+  </Accordion>
+  <Accordion title="lpm (longest prefix match)">
+    Append a slash and the prefix length in decimal. A prefix length of `0` matches any value.
+
+    ```
+    10.0.0.0/8
+    0x0a000000/8
+    192.168.1.0/24
+    ```
+  </Accordion>
+  <Accordion title="ternary">
+    Write `value&&&mask` with no spaces. Mask bit `1` = exact; mask bit `0` = wildcard. Entries require a numeric priority. Use `0&&&0` to match any value.
+
+    ```
+    0x0800&&&0xffff      # exact match on EtherType 0x0800
+    10.0.0.0&&&255.0.0.0 # match 10.x.x.x
+    0&&&0                # match any
+    ```
+  </Accordion>
+  <Accordion title="range">
+    Write `min->max` with no spaces. Entries require a numeric priority. Use the full range of the field (e.g. `0->0xffffffff`) to match any value.
+
+    ```
+    1->1023        # ports 1 through 1023
+    0->255         # all 8-bit values
+    80->80         # exactly port 80
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  For tables with `ternary`, `optional`, or `range` key fields, you **must** supply a priority. Among all matching entries, the one with the **lowest** numeric priority wins.
+</Note>
+
+### table_set_default
+
+Sets the action executed when a packet does not match any entry in the table (a miss).
+
+```
+table_set_default <table name> <action name> <action parameters>
+```
+
+```
+RuntimeCmd: table_set_default MyIngress.ipv4_lpm MyIngress.drop
+RuntimeCmd: table_set_default MyIngress.forward set_output_port 511
+```
+
+### table_reset_default
+
+Resets the default action back to the one specified in the P4 program (or `NoAction` if none was declared).
+
+```
+RuntimeCmd: table_reset_default MyIngress.ipv4_lpm
+```
+
+### table_delete
+
+Removes an entry from a table by its handle.
+
+```
+table_delete <table name> <entry handle>
+```
+
+```
+RuntimeCmd: table_delete MyIngress.ipv4_lpm 0
+```
+
+<Tip>
+  Use `table_dump <table name>` to list all installed entries and their handles.
+</Tip>
+
+## Register commands
+
+Registers are stateful P4 arrays that both the data plane and the control plane can read and write.
+
+### register_read
+
+Reads the value at a specific index in a register array.
+
+```
+RuntimeCmd: register_read myreg1 5
+myreg1[5]= 27
+```
+
+### register_write
+
+Writes a value to a specific index in a register array.
+
+```
+RuntimeCmd: register_write myreg1 10 42
+```
+
+### register_reset
+
+Resets all elements of a register array to zero.
+
+```
+RuntimeCmd: register_reset myreg1
+```
+
+## Other useful commands
+
+| Command | Description |
+|---|---|
+| `show_ports` | Lists port numbers, bound interface names, and link status. |
+| `show_pvs` | Lists all parser value sets and their expected entry bitwidths. |
+| `table_dump <name>` | Prints all entries in a table with their handles, match keys, and actions. |
+| `table_num_entries <name>` | Shows how many entries are installed in a table. |
+| `counter_read <name> <index>` | Reads a counter element. |
+| `counter_reset <name>` | Clears all elements of a counter array. |
+| `meter_set_rates <name> <index> <rate>:<burst> ...` | Configures token-bucket rates for a meter element. |
+| `help [command]` | Shows usage for all commands, or for a specific command. |

@@ -1,0 +1,131 @@
+---
+title: "Mininet integration"
+description: "Run bmv2 switches inside virtual Mininet topologies to test P4 programs end-to-end with real traffic between software hosts."
+keywords: ["mininet", "1sw_demo", "p4_mininet", "simple_router", "simple_switch", "runtime_CLI", "pingall", "iperf", "bmv2"]
+---
+
+Mininet creates virtual networks entirely in software: Linux network namespaces act as hosts, and bmv2 switch processes handle packet forwarding between them. This lets you run `ping`, `iperf`, and other standard tools against a P4 program on a single development machine without physical hardware.
+
+The `mininet/` directory in the bmv2 repository contains everything you need: a Python topology script (`1sw_demo.py`), a Mininet `P4Switch` class (`p4_mininet.py`), and a pre-compiled `simple_router` JSON config to try immediately.
+
+## Prerequisites
+
+Install Mininet and its Python bindings:
+
+```bash
+sudo apt-get install mininet python3-mininet
+```
+
+You also need a built bmv2 target binary (`simple_router` or `simple_switch`) and its compiled JSON config.
+
+## Quick start with simple_router
+
+<Steps>
+  <Step title="Start the topology">
+    Open a terminal, change to the `mininet/` directory, and launch the demo topology:
+
+    ```bash
+    sudo python3 1sw_demo.py \
+      --behavioral-exe ../targets/simple_router/simple_router \
+      --json ../targets/simple_router/simple_router.json
+    ```
+
+    This creates a single switch (`s1`) connected to two hosts (`h1` and `h2`) and drops you into the Mininet CLI. The switch process starts in the background on Thrift port `9090`.
+  </Step>
+
+  <Step title="Populate the forwarding tables">
+    In a second terminal, change to `targets/simple_router/` and load the pre-written commands file:
+
+    ```bash
+    cd targets/simple_router
+    ./runtime_CLI < commands.txt
+    ```
+
+    `runtime_CLI` connects to the Thrift API on port `9090` and replays each command (table entries, default actions, etc.) in order.
+  </Step>
+
+  <Step title="Test connectivity">
+    Back in the Mininet CLI, run `pingall` to verify that all hosts can reach each other:
+
+    ```
+    mininet> pingall
+    *** Ping: testing ping reachability
+    h1 -> h2
+    h2 -> h1
+    *** Results: 0% dropped (2/2 received)
+    ```
+  </Step>
+
+  <Step title="Run iperf">
+    Start an iperf server on `h2` and connect from `h1`:
+
+    ```
+    mininet> h2 iperf -s &
+    mininet> h1 iperf -c h2
+    ```
+
+    You can also open individual host shells with `xterm h1` if you prefer interactive terminals.
+  </Step>
+</Steps>
+
+## Using simple_switch instead
+
+Any bmv2 target binary can replace `simple_router`. To use `simple_switch` with your own P4 program:
+
+```bash
+sudo python3 1sw_demo.py \
+  --behavioral-exe /path/to/simple_switch \
+  --json /path/to/your_program.json
+```
+
+Then populate tables with your own `commands.txt` file (or interactively via `runtime_CLI`):
+
+```bash
+runtime_CLI --thrift-port 9090
+```
+
+<Note>
+  `1sw_demo.py` accepts `--num-hosts` (default: 2) and `--mode l2|l3` (default: `l3`). In L3 mode, each host gets a `/24` subnet and a default route via the switch. In L2 mode, all hosts are on the same flat segment.
+</Note>
+
+## How 1sw_demo.py works
+
+`1sw_demo.py` uses two helper classes from `p4_mininet.py`:
+
+- **`P4Switch`** — a Mininet `Switch` subclass that launches the bmv2 binary with the given `--json` config, `--thrift-port`, and interface mappings.
+- **`P4Host`** — a Mininet `Host` subclass that disables IPv6 and sets up ARP/routing for the demo.
+
+The topology (`SingleSwitchTopo`) adds one switch and `n` hosts, then links each host to the switch. You can adapt `1sw_demo.py` to build multi-switch topologies by adding more `P4Switch` nodes to the `Topo` subclass.
+
+<AccordionGroup>
+  <Accordion title="Changing the Thrift port">
+    Pass `--thrift-port` to `1sw_demo.py` if port `9090` is already in use:
+
+    ```bash
+    sudo python3 1sw_demo.py \
+      --behavioral-exe ../targets/simple_router/simple_router \
+      --json ../targets/simple_router/simple_router.json \
+      --thrift-port 9091
+    ```
+
+    Then connect `runtime_CLI` to the same port:
+
+    ```bash
+    runtime_CLI --thrift-port 9091
+    ```
+  </Accordion>
+
+  <Accordion title="Capturing packets with pcap">
+    Pass `--pcap-dump <dir>` to `1sw_demo.py` to write `.pcap` files for every switch interface. Open them with Wireshark or `tcpdump -r` after the run.
+  </Accordion>
+
+  <Accordion title="Cleaning up after a crash">
+    If Mininet exits uncleanly, run:
+
+    ```bash
+    sudo mn -c
+    ```
+
+    This removes all virtual interfaces and network namespaces left behind by the previous session.
+  </Accordion>
+</AccordionGroup>

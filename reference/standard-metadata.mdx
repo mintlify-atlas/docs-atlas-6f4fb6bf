@@ -1,0 +1,119 @@
+---
+title: "Standard metadata"
+description: "Reference for all standard_metadata_t fields available in P4_16 v1model programs running on simple_switch."
+keywords: ["standard_metadata", "v1model", "ingress_port", "egress_spec", "egress_port", "instance_type", "parser_error", "checksum_error"]
+---
+
+In a P4_16 program using the v1model architecture, all fields below are members of the struct type `standard_metadata_t`. In a P4_14 program, they are part of the predefined header named `standard_metadata`.
+
+<Note>
+  The abbreviations **sm14** and **v1m** indicate whether a field appears in the P4_14 language specification (sm14) or in the `p4include/v1model.p4` file used for P4_16 programs (v1m).
+</Note>
+
+## Fields
+
+<ParamField path="ingress_port" type="bit<9>" required>
+  **(sm14, v1m) — Read only.**
+
+  For new packets, the number of the ingress port on which the packet arrived at the device. Read only.
+</ParamField>
+
+<ParamField path="packet_length" type="bit<32>">
+  **(sm14, v1m)**
+
+  The length of the packet in bytes.
+</ParamField>
+
+<ParamField path="egress_spec" type="bit<9>">
+  **(sm14, v1m)**
+
+  Controls which output port a packet will go to. Assign a value during ingress processing to determine the packet's destination.
+
+  The `mark_to_drop` primitive action (P4_16) and the `drop` primitive action (P4_14) set this field to the special value `DROP_PORT` (511 decimal by default in simple_switch, configurable via `--drop-port`). If `egress_spec` equals `DROP_PORT` at the end of ingress processing, the packet is dropped and does not enter the packet buffer or egress processing.
+
+  <Warning>
+    If you never assign a value to `egress_spec` and never drop the packet during ingress processing, its default initial value is `0`, and the packet will be unicast to output port 0.
+  </Warning>
+
+  See the [packet lifecycle](/reference/packet-lifecycle) page for the relative priority of `egress_spec` versus other packet operations (clone, resubmit, multicast) at the end of ingress.
+</ParamField>
+
+<ParamField path="egress_port" type="bit<9>">
+  **(sm14, v1m) — Read only in egress.**
+
+  Intended to be accessed only during egress processing. Its value is assigned just before egress processing begins, set to the output port the packet is destined for.
+
+  <Warning>
+    Reading `egress_port` during ingress produces an uninitialized garbage value. The field has no compile-time protection against being written, but writing to it is not portable across P4 targets. See [Appendix D.2 of the PSA specification](https://p4.org/wp-content/uploads/sites/53/p4-spec/docs/PSA-v1.2.html#appendix-rationale-egress-cannot-change-output-port) for rationale.
+  </Warning>
+</ParamField>
+
+<ParamField path="instance_type" type="bit<32>">
+  **(sm14, v1m)**
+
+  Indicates how the packet reached the current processing stage. Read this field to distinguish different packet origins.
+
+  <AccordionGroup>
+    <Accordion title="Values in ingress processing">
+      | Constant | Meaning |
+      | --- | --- |
+      | `NORMAL` | Newly arrived from an ingress port |
+      | `RESUBMIT` | Produced by a `resubmit` or `resubmit_preserving_field_list` call |
+      | `RECIRC` | Produced by a `recirculate` or `recirculate_preserving_field_list` call |
+    </Accordion>
+    <Accordion title="Values in egress processing">
+      | Constant | Meaning |
+      | --- | --- |
+      | `NORMAL` | Normal unicast packet from ingress |
+      | `INGRESS_CLONE` | Result of an ingress-to-egress clone operation |
+      | `EGRESS_CLONE` | Result of an egress-to-egress clone operation |
+      | `REPLICATION` | Multicast copy produced during ingress |
+    </Accordion>
+  </AccordionGroup>
+
+  <Tip>
+    These constants are not pre-defined by v1model. Copy the [constant definitions from p4c](https://github.com/p4lang/p4c/blob/main/testdata/p4_14_samples/switch_20160512/includes/intrinsic.p4#L60-L66) into your program until they are officially added to v1model.p4.
+  </Tip>
+</ParamField>
+
+<ParamField path="parser_error" type="error">
+  **(v1m) — also named `parser_status` in sm14.**
+
+  Set by the parser to indicate whether an error occurred during parsing.
+
+  - In P4_16 + v1model: value is `error.NoError` if parsing succeeded, otherwise an error code.
+  - In P4_14: value is `0` for no error.
+
+  The field is named `parser_status` in the P4_14 specification and renamed `parser_error` in v1model.
+
+  <Note>
+    `parser_error_location` from the P4_14 spec is not implemented in simple_switch.
+  </Note>
+</ParamField>
+
+<ParamField path="checksum_error" type="bit<1>">
+  **(v1m) — Read only.**
+
+  Set to `1` if a call to `verify_checksum` or `verify_checksum_with_payload` finds an incorrect checksum, otherwise `0`. Calls to `verify_checksum` must be placed in the `VerifyChecksum` control, which runs after the parser and before ingress.
+
+  <Warning>
+    A packet with a checksum error is **not** automatically dropped. Ingress processing begins with `checksum_error` set to `1`. Your P4 code must explicitly drop such packets if that is the desired behavior. There is no way to determine which specific `verify_checksum` call found the error when multiple calls are present.
+  </Warning>
+</ParamField>
+
+## Summary table
+
+| Field | P4_14 name | Access | Pipeline |
+| --- | --- | --- | --- |
+| `ingress_port` | `ingress_port` | Read only | Ingress |
+| `packet_length` | `packet_length` | Read/write | Both |
+| `egress_spec` | `egress_spec` | Read/write | Ingress |
+| `egress_port` | `egress_port` | Read only | Egress |
+| `instance_type` | `instance_type` | Read | Both |
+| `parser_error` | `parser_status` | Read only | Both |
+| `checksum_error` | *(not in sm14)* | Read only | Ingress |
+
+## Related
+
+- [Intrinsic metadata](/reference/intrinsic-metadata) — `intrinsic_metadata` and `queueing_metadata` fields
+- [Packet lifecycle](/reference/packet-lifecycle) — how `egress_spec`, `mcast_grp`, and clone interact at the end of ingress and egress

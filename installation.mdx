@@ -1,0 +1,267 @@
+---
+title: "Installation"
+description: "Install BMv2 from packages on Ubuntu or Debian, build from source, or set up on macOS."
+---
+
+BMv2 can be installed from pre-built packages (Ubuntu 20.04+, Debian 11) or compiled from source on Linux and macOS. Package-based installation is the fastest path; building from source gives you more control over build options and lets you track the latest commits.
+
+<Warning>
+  BMv2 is a development and testing tool, not a production-grade switch. See the [introduction](/introduction) for details on its intended use.
+</Warning>
+
+## Package-based install
+
+Pre-built packages are hosted on the openSUSE Build Service under the `home:p4lang` project.
+
+<Tabs>
+  <Tab title="Ubuntu 20.04+">
+    ```bash
+    . /etc/os-release
+    echo "deb http://download.opensuse.org/repositories/home:/p4lang/xUbuntu_${VERSION_ID}/ /" | sudo tee /etc/apt/sources.list.d/home:p4lang.list
+    curl -fsSL "https://download.opensuse.org/repositories/home:p4lang/xUbuntu_${VERSION_ID}/Release.key" | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_p4lang.gpg > /dev/null
+    sudo apt update
+    sudo apt install p4lang-bmv2
+    ```
+
+    This works for Ubuntu 20.04 (Focal), 22.04 (Jammy), and 24.04 (Noble). The `VERSION_ID` variable is read automatically from `/etc/os-release`.
+  </Tab>
+  <Tab title="Debian 11 (Bullseye)">
+    ```bash
+    echo 'deb http://download.opensuse.org/repositories/home:/p4lang/Debian_11/ /' | sudo tee /etc/apt/sources.list.d/home:p4lang.list
+    curl -fsSL https://download.opensuse.org/repositories/home:p4lang/Debian_11/Release.key | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/home_p4lang.gpg > /dev/null
+    sudo apt update
+    sudo apt install p4lang-bmv2
+    ```
+  </Tab>
+</Tabs>
+
+### Manual `.deb` install
+
+If you cannot add the repository (e.g., in an air-gapped environment), download the `.deb` file directly:
+
+1. Go to `https://build.opensuse.org/package/show/home:p4lang/p4lang-bmv2`, click **Download package**, and choose your OS version.
+2. Install the downloaded file:
+
+```bash
+sudo dpkg -i /path/to/package.deb
+```
+
+<Note>
+  You must download a new `.deb` file manually each time you want to upgrade.
+</Note>
+
+---
+
+## Build from source
+
+Building from source is required on Fedora and macOS, and is useful when you need to enable optional features such as the debugger or P4Runtime support.
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/p4lang/behavioral-model.git
+    cd behavioral-model
+    ```
+  </Step>
+
+  <Step title="Install build dependencies">
+    Choose the instructions for your platform.
+
+    <Tabs>
+      <Tab title="Ubuntu 20.04">
+        Install the system packages:
+
+        ```bash
+        sudo apt-get install -y automake cmake libgmp-dev \
+            libpcap-dev libboost-dev libboost-test-dev libboost-program-options-dev \
+            libboost-system-dev libboost-filesystem-dev libboost-thread-dev \
+            libevent-dev libtool flex bison pkg-config g++ libssl-dev
+        ```
+
+        Then install Thrift and nanomsg from source using the provided scripts (Thrift 0.11.0 or later, nanomsg 1.0.0 or later):
+
+        ```bash
+        bash ci/install-thrift.sh
+        bash ci/install-nanomsg.sh
+        sudo ldconfig
+        bash ci/install-nnpy.sh
+        ```
+
+        Alternatively, run the all-in-one helper script:
+
+        ```bash
+        bash install_deps.sh
+        ```
+      </Tab>
+      <Tab title="Ubuntu 22.04+">
+        On Ubuntu 22.04 and later, Thrift and nanomsg are available as system packages from the p4lang repository. Run the provided script:
+
+        ```bash
+        sudo bash install_deps_ubuntu_22.04.sh
+        ```
+
+        This adds the p4lang apt repository and installs all required packages, including `libthrift-dev`, `libnanomsg-dev`, and `p4lang-pi`.
+      </Tab>
+      <Tab title="Fedora">
+        ```bash
+        sudo dnf install -y automake cmake gmp-devel libpcap-devel \
+            boost-devel boost-system boost-thread boost-filesystem boost-test \
+            libevent-devel libtool flex bison pkg-config g++ openssl-devel \
+            thrift-devel nanomsg-devel
+        ```
+
+        Install the `nnpy` Python package (needed for the CLI):
+
+        ```bash
+        bash ci/install-nnpy.sh
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Build with autoconf (recommended)">
+    ```bash
+    ./autogen.sh
+    ./configure
+    make
+    sudo make install
+    ```
+
+    After installing, refresh the shared library cache on Linux:
+
+    ```bash
+    sudo ldconfig
+    ```
+
+    <Tip>
+      Pass `--disable-logging-macros` to `configure` to improve performance by disabling debug logging:
+      ```bash
+      ./configure --disable-logging-macros
+      ```
+
+      To build with debug symbols and no optimization instead:
+      ```bash
+      ./configure 'CXXFLAGS=-O0 -g'
+      ```
+
+      To enable the interactive debugger:
+      ```bash
+      ./configure --enable-debugger
+      ```
+    </Tip>
+  </Step>
+</Steps>
+
+### cmake build (experimental)
+
+A cmake-based build is also available. It differs from the autoconf build in how it handles static vs. shared libraries.
+
+```bash
+mkdir build
+cd build
+cmake ..
+make -j$(nproc)
+sudo make install
+```
+
+For faster builds with Ninja:
+
+```bash
+mkdir build
+cd build
+cmake -GNinja ..
+ninja
+sudo ninja install
+```
+
+<AccordionGroup>
+  <Accordion title="cmake build options">
+    The following flags can be passed during the `cmake ..` configuration step:
+
+    | Option | Default | Description |
+    |--------|---------|-------------|
+    | `-DWITH_NANOMSG=OFF` | ON | Disable nanomsg support |
+    | `-DWITH_THRIFT=OFF` | ON | Disable Thrift support |
+    | `-DWITH_PI=ON` | OFF | Enable PI (P4Runtime) support |
+    | `-DWITH_TARGETS=OFF` | ON | Skip building targets (simple_switch, etc.) |
+    | `-DENABLE_DEBUGGER=ON` | OFF | Enable the interactive P4 debugger |
+    | `-DENABLE_LOGGING_MACROS=OFF` | ON | Disable logging for better performance |
+    | `-DENABLE_MODULES=ON` | auto | Enable runtime shared library loading |
+    | `-DENABLE_COVERAGE=ON` | OFF | Enable code coverage instrumentation |
+    | `-DENABLE_WERROR=ON` | OFF | Treat compiler warnings as errors |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## macOS
+
+Use the provided bootstrap script to install all dependencies via Homebrew. Xcode 8 or later is required for `thread_local` support.
+
+```bash
+bash tools/macos/bootstrap_mac.sh
+```
+
+This installs automake, autoconf, bison, boost, cmake, gmp, libevent, openssl, thrift, nanomsg, and nnpy.
+
+After dependencies are installed, build with autoconf:
+
+```bash
+./autogen.sh
+./configure
+make
+```
+
+<Note>
+  `sudo make install` is optional on macOS. You can run `simple_switch` directly from the build tree.
+</Note>
+
+---
+
+## Verifying the installation
+
+After a package install or `sudo make install`, confirm the binaries are on your `PATH`:
+
+```bash
+simple_switch --version
+simple_switch_CLI --help
+```
+
+For a source build without installing, the binaries are located in:
+
+```
+targets/simple_switch/simple_switch
+targets/simple_switch/simple_switch_CLI
+```
+
+To run the unit tests and confirm everything built correctly:
+
+<CodeGroup>
+
+```bash autoconf build
+make check
+```
+
+```bash cmake build
+cd build
+ctest
+```
+
+</CodeGroup>
+
+<Warning>
+  If you see nanomsg errors when running `make check`, run the tests as root: `sudo make check`.
+</Warning>
+
+---
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Compile a P4 program and run it on simple_switch.
+  </Card>
+  <Card title="Targets" icon="server" href="/targets/overview">
+    Learn about simple_switch, simple_switch_grpc, and psa_switch.
+  </Card>
+</CardGroup>

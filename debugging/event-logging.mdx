@@ -1,0 +1,131 @@
+---
+title: "Event logging"
+description: "BMv2's built-in event logger broadcasts packet-processing events over nanomsg in real time, letting you observe table hits, misses, parser transitions, and more without modifying your P4 program."
+sidebarTitle: "Event logging"
+keywords: ["event logger", "nanomsg", "nanolog", "elogger", "observability", "bmv2"]
+---
+
+BMv2 includes an event logger that broadcasts a message over a nanomsg channel every time a significant processing event occurs. Any number of clients can subscribe to the channel and consume events in real time — without needing to pause or modify the switch.
+
+## What the event logger records
+
+The event logger emits a message for each of the following events:
+
+| Event type         | Description                                            |
+| ------------------ | ------------------------------------------------------ |
+| `PACKET_IN`        | A packet arrives at an ingress port                    |
+| `PACKET_OUT`       | A packet leaves an egress port                         |
+| `PARSER_START`     | Packet begins parsing                                  |
+| `PARSER_DONE`      | Packet finishes parsing                                |
+| `PARSER_EXTRACT`   | Parser extracts a header                               |
+| `DEPARSER_START`   | Deparser begins emitting headers                       |
+| `DEPARSER_DONE`    | Deparser finishes                                      |
+| `DEPARSER_EMIT`    | Deparser emits a header                                |
+| `CHECKSUM_UPDATE`  | A checksum is recalculated                             |
+| `PIPELINE_START`   | Packet enters a pipeline (ingress or egress)           |
+| `PIPELINE_DONE`    | Packet exits a pipeline                                |
+| `CONDITION_EVAL`   | A conditional expression is evaluated (with result)    |
+| `TABLE_HIT`        | A table lookup succeeds (includes the entry handle)    |
+| `TABLE_MISS`       | A table lookup finds no matching entry                 |
+| `ACTION_EXECUTE`   | An action is executed                                  |
+
+Each message includes the switch ID, context ID, a sequence number, and the
+packet ID / copy ID pair, so you can correlate events back to a specific packet.
+
+## Enabling event logging
+
+Pass `--nanolog` with a nanomsg IPC address when starting `simple_switch`:
+
+```bash
+sudo simple_switch \
+  -i 0@eth0 -i 1@eth1 \
+  --nanolog ipc:///tmp/bm-log.ipc \
+  my_program.json
+```
+
+<Tip>
+  You can choose any valid nanomsg IPC path. `ipc:///tmp/bm-log.ipc` is the
+  conventional default used in examples and tooling.
+</Tip>
+
+The switch will start broadcasting events immediately. Any client that connects
+to the same address will begin receiving messages.
+
+## Consuming events with nanomsg_client.py
+
+While the switch is running, attach the bundled client:
+
+```bash
+sudo ./tools/nanomsg_client.py [--thrift-port <port>]
+```
+
+The client connects to the Thrift server to discover the nanomsg socket address
+and load the P4 JSON (for resolving object names). The default Thrift port is
+`9090`.
+
+You can also supply the socket address and JSON file directly to avoid the
+Thrift dependency:
+
+```bash
+sudo ./tools/nanomsg_client.py \
+  --socket ipc:///tmp/bm-log.ipc \
+  --json my_program.json
+```
+
+### Example output
+
+Once connected, the client prints one line per event:
+
+```
+type: PACKET_IN, switch_id: 0, cxt_id: 0, sig: 1, id: 0, copy_id: 0, port_in: 0
+type: PARSER_START, switch_id: 0, cxt_id: 0, sig: 2, id: 0, copy_id: 0, parser_id: 0 (parser)
+type: PARSER_EXTRACT, switch_id: 0, cxt_id: 0, sig: 3, id: 0, copy_id: 0, header_id: 0 (ethernet)
+type: PARSER_EXTRACT, switch_id: 0, cxt_id: 0, sig: 4, id: 0, copy_id: 0, header_id: 1 (ipv4)
+type: PARSER_DONE, switch_id: 0, cxt_id: 0, sig: 5, id: 0, copy_id: 0, parser_id: 0 (parser)
+type: PIPELINE_START, switch_id: 0, cxt_id: 0, sig: 6, id: 0, copy_id: 0, pipeline_id: 0 (ingress)
+type: TABLE_HIT, switch_id: 0, cxt_id: 0, sig: 7, id: 0, copy_id: 0, table_id: 0 (ipv4_lpm), entry_hdl: 1
+type: ACTION_EXECUTE, switch_id: 0, cxt_id: 0, sig: 8, id: 0, copy_id: 0, action_id: 0 (set_nhop)
+type: PIPELINE_DONE, switch_id: 0, cxt_id: 0, sig: 9, id: 0, copy_id: 0, pipeline_id: 0 (ingress)
+type: PACKET_OUT, switch_id: 0, cxt_id: 0, sig: 10, id: 0, copy_id: 0, port_out: 1
+```
+
+Object names (e.g. `(ipv4_lpm)`, `(set_nhop)`) are resolved from the P4 JSON.
+If the JSON is unavailable, only numeric IDs are shown.
+
+## Prerequisites
+
+`nanomsg_client.py` requires the `nnpy` Python package:
+
+```bash
+pip install nnpy
+# or use the provided helper script:
+./ci/install-nnpy.sh
+```
+
+## Disabling the event logger at build time
+
+The event logger is compiled in by default. To remove it entirely — which
+eliminates its runtime overhead — pass `--disable-elogger` to `configure`:
+
+<Tabs>
+  <Tab title="autoconf">
+    ```bash
+    ./configure --disable-elogger
+    make
+    ```
+  </Tab>
+  <Tab title="cmake">
+    ```bash
+    cmake -DENABLE_ELOGGER=OFF ..
+    make -j$(nproc)
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+  When the event logger is disabled at build time, the `--nanolog` flag has no
+  effect and `nanomsg_client.py` will report that the event logger is not
+  enabled on the switch. Disabling the event logger is recommended for
+  performance-sensitive builds; see the [performance guide](/debugging/performance)
+  for the full recommended build configuration.
+</Warning>

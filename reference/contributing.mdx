@@ -1,0 +1,124 @@
+---
+title: "Contributing"
+description: "How to contribute code, report bugs, and request features for the BMv2 behavioral model."
+keywords: ["contributing", "pull request", "CLA", "coding guidelines", "cpplint", "style", "GitHub", "mailing list"]
+---
+
+BMv2 is an open-source project maintained by the P4 Language Consortium. Contributions are welcome via GitHub pull requests.
+
+## Submitting a pull request
+
+<Steps>
+  <Step title="Fork the repository">
+    Fork [p4lang/behavioral-model](https://github.com/p4lang/behavioral-model) on GitHub and clone your fork locally.
+
+    ```bash
+    git clone https://github.com/<your-username>/behavioral-model.git
+    cd behavioral-model
+    ```
+  </Step>
+
+  <Step title="Sign the Apache CLA">
+    All contributors must sign the P4.org Contributor License Agreement before any contribution can be accepted. Download the CLA, sign it, and return it to [membership@p4.org](mailto:membership@p4.org).
+
+    The CLA is available at [https://p4.org/assets/P4_Language_Consortium_Membership_Agreement.pdf](https://p4.org/assets/P4_Language_Consortium_Membership_Agreement.pdf).
+
+    <Warning>
+      Pull requests from contributors who have not signed the CLA cannot be merged.
+    </Warning>
+  </Step>
+
+  <Step title="Make your changes">
+    Create a branch, implement your change, and ensure your code follows the [coding guidelines](#coding-guidelines).
+  </Step>
+
+  <Step title="Check style locally">
+    Run the style check script before opening a pull request:
+
+    ```bash
+    ./tools/check_style.sh
+    ```
+
+    CI will run `cpplint.py` on your changes and reject the PR if style violations are found.
+  </Step>
+
+  <Step title="Build with CI flags">
+    Build locally using the same flags as the CI environment to catch issues before they fail in CI:
+
+    ```bash
+    ./autogen.sh
+    ./configure --with-pdfixed --with-pi --with-stress-tests --enable-debugger --enable-Werror
+    make
+    make check
+    ```
+  </Step>
+
+  <Step title="Open a pull request">
+    Push your branch and open a pull request against the `main` branch of [p4lang/behavioral-model](https://github.com/p4lang/behavioral-model).
+  </Step>
+</Steps>
+
+## Coding guidelines
+
+Contributions to the C++ core code — in particular the `bm_sim` module under `src/bm_sim` — must follow the project's coding guidelines.
+
+<AccordionGroup>
+
+<Accordion title="Style guide">
+  BMv2 follows the [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) with some project-specific differences documented in the repository's [wiki](https://github.com/p4lang/behavioral-model/wiki/Coding-guidelines).
+
+  Key points:
+  - Use Google-style naming conventions (e.g. `snake_case` for variables and functions, `CamelCase` for types).
+  - Indent with 2 spaces, not tabs.
+  - Keep lines under 80 characters where practical.
+</Accordion>
+
+<Accordion title="Running cpplint locally">
+  The CI suite runs `cpplint.py` on all C++ changes. Run the helper script to check style before you push:
+
+  ```bash
+  ./tools/check_style.sh
+  ```
+
+  Fix all reported violations before opening a pull request. CI will reject PRs with style errors.
+</Accordion>
+
+<Accordion title="Compiler warnings">
+  The CI build uses `-Werror`, which treats all compiler warnings as errors. Build locally with `--enable-Werror` to catch these before CI does:
+
+  ```bash
+  ./configure --enable-Werror
+  make
+  ```
+</Accordion>
+
+</AccordionGroup>
+
+## Reporting bugs
+
+Submit a bug report as a GitHub issue with the appropriate label:
+
+**[https://github.com/p4lang/behavioral-model/issues](https://github.com/p4lang/behavioral-model/issues)**
+
+When reporting a bug, include:
+- The BMv2 version or commit hash
+- Your operating system and compiler version
+- A minimal P4 program that reproduces the issue, if applicable
+- The full error output or unexpected behavior
+
+## Requesting features
+
+Feature requests are also tracked as GitHub issues. Open an issue with a feature request label describing the desired behavior and your use case.
+
+You can also send feature requests to the mailing list: **[p4-dev@lists.p4.org](mailto:p4-dev@lists.p4.org)**
+
+## Getting help
+
+For general questions, reach out via:
+
+- **Mailing list**: [p4-dev@lists.p4.org](mailto:p4-dev@lists.p4.org)
+- **GitHub issues**: [github.com/p4lang/behavioral-model/issues](https://github.com/p4lang/behavioral-model/issues)
+
+<Tip>
+  Searching existing GitHub issues and the mailing list archive before opening a new issue often reveals that the question has already been answered.
+</Tip>

@@ -1,0 +1,269 @@
+---
+title: "simple_switch"
+description: "The reference BMv2 target. Implements the v1model architecture for P4_14 and P4_16 programs, with a Thrift-based control API."
+keywords: ["simple_switch", "v1model", "P4_14", "P4_16", "thrift", "bmv2"]
+---
+
+`simple_switch` is the de-facto standard BMv2 target. It runs P4\_14 programs and P4\_16 programs written against the `v1model` architecture, which was designed to match the abstract switch model from the P4\_14 specification. Most P4 tutorials, examples, and development workflows are built around `simple_switch`.
+
+<Note>
+  If you need a standards-based P4Runtime gRPC control API, use [simple\_switch\_grpc](/targets/simple-switch-grpc) instead. `simple_switch` only exposes a Thrift API.
+</Note>
+
+## Architecture
+
+`simple_switch` implements a pipeline with the following stages, in order:
+
+1. **Parser** — extracts headers from the incoming packet
+2. **VerifyChecksum** — validates checksums (v1model P4\_16 only)
+3. **Ingress** — applies match-action tables; sets `egress_spec`, multicast group, clone sessions, etc.
+4. **Packet buffer / replication engine** — handles multicast copies, cloning, resubmit
+5. **Egress** — applies match-action tables for per-copy processing
+6. **ComputeChecksum** — updates checksums (v1model P4\_16 only)
+7. **Deparser** — reassembles the packet from headers
+
+The drop port defaults to **511**. Assigning `egress_spec = 511` (or calling `mark_to_drop`) causes the packet to be dropped at the end of ingress, before it enters the packet buffer.
+
+## Supported P4 features
+
+`simple_switch` implements the following P4 features:
+
+<CardGroup cols={2}>
+  <Card title="Counters" icon="chart-bar">
+    Direct and indirect counters. Readable and writable via the Thrift API. The Thrift API limits counter element width to 64 bits.
+  </Card>
+  <Card title="Meters" icon="gauge">
+    Direct and indirect meters (token-bucket rate limiting). Both byte-mode and packet-mode are supported.
+  </Card>
+  <Card title="Registers" icon="database">
+    Stateful register arrays. Elements must be `bit<W>` or `int<W>`. Struct types are not supported — use bit-slicing and concatenation to emulate them.
+  </Card>
+  <Card title="Action profiles" icon="list">
+    Groups of actions referenced by match-action tables, enabling weighted and indirect action selection.
+  </Card>
+  <Card title="Action selectors" icon="shuffle">
+    Dynamic action selection using hash-based or round-robin selection over a group of action profile members.
+  </Card>
+  <Card title="Hash and checksum" icon="hashtag">
+    Multiple algorithms: CRC16, CRC32, csum16, identity, XOR16, and others. Hash `base` and `max` parameters can be runtime variables.
+  </Card>
+  <Card title="Multicast replication" icon="share-nodes">
+    Packets can be replicated to multiple output ports by setting `mcast_grp` and configuring groups via the control API.
+  </Card>
+  <Card title="Clone / mirror" icon="copy">
+    Ingress-to-egress (`clone_i2e`) and egress-to-egress (`clone_e2e`) cloning via mirror sessions configured through the control API.
+  </Card>
+  <Card title="Resubmit" icon="rotate-left">
+    Sends the original packet (with optional preserved metadata) back to the start of ingress. `instance_type` is set to `RESUBMIT`.
+  </Card>
+  <Card title="Recirculate" icon="arrows-rotate">
+    After deparsing, sends the packet back to the parser as a new ingress packet. `instance_type` is set to `RECIRC`.
+  </Card>
+  <Card title="Digest messages" icon="comment">
+    Data plane can send structured field lists to the control plane using `generate_digest`.
+  </Card>
+  <Card title="Priority queuing" icon="layers">
+    Optional per-port priority queues, enabled with `--priority-queues`. Priority is read from `intrinsic_metadata.priority`.
+  </Card>
+</CardGroup>
+
+## Running simple_switch
+
+```bash
+sudo simple_switch [options] <program.json> [-- <target-options>]
+```
+
+<Note>
+  Target-specific options must be separated from standard BMv2 options with `--`.
+</Note>
+
+### Key command-line flags
+
+| Flag | Description |
+|---|---|
+| `-i <port>@<iface>` | Bind a P4 port number to a network interface. E.g. `-i 0@eth0 -i 1@eth1`. Repeat for each port. |
+| `--thrift-port <port>` | Port for the Thrift control API server (default: 9090). |
+| `--device-id <id>` | Device ID used to identify this switch instance (default: 0). |
+| `--nanolog <ipc-addr>` | Enable event logging over nanomsg. E.g. `--nanolog ipc:///tmp/bm-log.ipc`. |
+| `--load-modules <lib.so,...>` | Load one or more shared libraries containing custom extern implementations. |
+| `--debugger` | Enable the interactive P4 debugger (p4dbg). |
+| `--debugger-addr <ipc-addr>` | Socket address for the debugger (default: `ipc:///tmp/bmv2-dbg.ipc`). |
+| `--drop-port <port>` | Override the drop port (default: 511). |
+| `--priority-queues <n>` | Enable `n` priority queues per egress port. |
+| `--no-p4` | Start without loading a P4 JSON file. The pipeline can be loaded later. |
+| `--log-console` | Write log output to stdout. |
+| `--log-file <path>` | Write log output to a file. |
+
+### Example invocations
+
+<CodeGroup>
+
+```bash Basic two-port switch
+sudo simple_switch \
+  -i 0@veth0 \
+  -i 1@veth1 \
+  my_program.json
+```
+
+```bash With Thrift on a custom port
+sudo simple_switch \
+  -i 0@eth0 \
+  -i 1@eth1 \
+  --thrift-port 9091 \
+  my_program.json
+```
+
+```bash With event logging and debugger
+sudo simple_switch \
+  -i 0@veth0 \
+  -i 1@veth1 \
+  --nanolog ipc:///tmp/bm-log.ipc \
+  --debugger \
+  my_program.json
+```
+
+```bash With priority queues and custom drop port
+sudo simple_switch \
+  -i 0@eth0 \
+  -i 1@eth1 \
+  --drop-port 255 \
+  -- \
+  --priority-queues 4 \
+  my_program.json
+```
+
+</CodeGroup>
+
+## Thrift control API
+
+`simple_switch` exposes a Thrift RPC server on port **9090** by default. The `simple_switch_CLI` tool connects to this server to let you manage tables, registers, counters, meters, multicast groups, and mirror sessions at runtime.
+
+```bash
+simple_switch_CLI --thrift-port 9090
+```
+
+Once connected, the CLI prompt accepts commands such as:
+
+```
+RuntimeCmd: table_add ipv4_lpm set_nhop 10.0.1.0/24 => 10.0.1.1 1
+RuntimeCmd: table_dump ipv4_lpm
+RuntimeCmd: register_read my_reg 0
+RuntimeCmd: mc_mgrp_create 1
+RuntimeCmd: mirroring_add 1 2
+```
+
+<Warning>
+  Do not attempt to use both the Thrift API and the P4Runtime API on the same switch simultaneously. If you need P4Runtime, use [simple\_switch\_grpc](/targets/simple-switch-grpc).
+</Warning>
+
+## Supported match kinds
+
+`simple_switch` supports the following `match_kind` values for table key fields:
+
+| Match kind | Source | Notes |
+|---|---|---|
+| `exact` | P4\_16 spec | Hash-table implementation. No priority needed. |
+| `lpm` | P4\_16 spec | Longest prefix wins. Exactly one `lpm` field per table. |
+| `ternary` | P4\_16 spec | Requires per-entry priority from the control plane. |
+| `optional` | `v1model.p4` | Either exact match or wildcard. Implemented as a ternary table. |
+| `range` | `v1model.p4` | Matches if `lo <= key <= hi`. Requires per-entry priority. |
+| `selector` | `v1model.p4` | Only valid for tables with an action selector implementation. |
+
+### Match kind selection rules
+
+BMv2 selects the internal table implementation based on the mix of match kinds present:
+
+- **Only `exact` fields** → exact hash-table. No priority required.
+- **At least one `lpm`, no `ternary`/`optional`/`range`** → LPM table. Exactly one `lpm` field allowed.
+- **At least one `ternary` or `optional`, no `range`** → ternary table. Per-entry priority required.
+- **At least one `range`** → range table. Per-entry priority required.
+
+<Note>
+  When using the P4Runtime API (via `simple_switch_grpc`), higher numeric priority values win among matching entries. Check your control plane API documentation if you use a different interface, as conventions differ.
+</Note>
+
+## Packet lifecycle pseudocode
+
+Understanding what happens at the end of ingress and egress processing is critical for writing correct P4 programs.
+
+<Tabs>
+  <Tab title="After ingress">
+    ```
+    if (clone was called) {
+        create clone(s) destined for the configured egress port(s)
+    }
+    if (digest to generate) {
+        send digest message to control plane
+    }
+    if (resubmit was called) {
+        restart ingress with original packet + preserved metadata
+    } else if (mcast_grp != 0) {
+        replicate packet to all ports in group mcast_grp
+    } else if (egress_spec == DROP_PORT) {
+        drop packet
+    } else {
+        unicast to egress_spec
+    }
+    ```
+  </Tab>
+  <Tab title="After egress">
+    ```
+    if (clone was called) {
+        create clone(s) destined for the configured egress port(s)
+    }
+    if (egress_spec == DROP_PORT) {
+        drop packet
+    } else if (recirculate was called) {
+        deparse packet, then restart ingress
+    } else {
+        send packet out egress_port
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Standard metadata fields
+
+These are the key fields available in `standard_metadata_t` (v1model) or the `standard_metadata` header (P4\_14):
+
+| Field | Direction | Description |
+|---|---|---|
+| `ingress_port` | Read (ingress) | Port on which the packet arrived. |
+| `egress_spec` | Write (ingress) | Output port. Set to DROP\_PORT (511) to drop. |
+| `egress_port` | Read (egress) | Output port selected during ingress. Read-only in egress. |
+| `packet_length` | Read | Packet length in bytes. |
+| `instance_type` | Read | Identifies packet origin: NORMAL, RESUBMIT, RECIRC, INGRESS\_CLONE, EGRESS\_CLONE, REPLICATION. |
+| `mcast_grp` | Write (ingress) | Multicast group ID. Non-zero triggers multicast replication. |
+| `egress_rid` | Read (egress) | Identifies which multicast copy this packet is. |
+| `ingress_global_timestamp` | Read | Microseconds since `simple_switch` started. Set at ingress. |
+| `egress_global_timestamp` | Read (egress) | Microseconds since `simple_switch` started. Set at egress. |
+| `checksum_error` | Read | 1 if `verify_checksum` found an error, otherwise 0. |
+| `parser_error` | Read | Non-zero if a parser error occurred. Packet is not auto-dropped. |
+
+<Warning>
+  All BMv2 timestamps start at 0 when the process starts and are in microseconds. Different `simple_switch` instances do not synchronize their clocks. Do not rely on timestamps for cross-switch coordination.
+</Warning>
+
+## Compiling a P4_16 v1model program
+
+<Steps>
+  <Step title="Install p4c">
+    Install the [p4c compiler](https://github.com/p4lang/p4c) for your platform.
+  </Step>
+  <Step title="Compile your program">
+    ```bash
+    p4c --target bmv2 --arch v1model --std p4-16 my_program.p4 -o my_program.json
+    ```
+    This produces a `my_program.json` file and a `my_program.p4info.txtpb` file (the P4Info message).
+  </Step>
+  <Step title="Run simple_switch">
+    ```bash
+    sudo simple_switch -i 0@veth0 -i 1@veth1 my_program.json
+    ```
+  </Step>
+  <Step title="Connect the CLI">
+    ```bash
+    simple_switch_CLI --thrift-port 9090
+    ```
+  </Step>
+</Steps>

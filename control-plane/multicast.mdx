@@ -1,0 +1,262 @@
+---
+title: "Multicast and mirroring"
+description: "Configure the Packet Replication Engine (PRE) to replicate packets to multiple ports and clone packets to mirror sessions."
+keywords: ["multicast", "PRE", "mcast_grp", "mc_mgrp_create", "mc_node_create", "mirroring", "clone", "packet replication engine"]
+---
+
+The Packet Replication Engine (PRE) inside `simple_switch` handles two kinds of packet copying: **multicast replication** and **cloning (mirroring)**. Both are configured from the control plane using CLI commands or the Thrift API.
+
+## How multicast works
+
+When ingress processing completes, `simple_switch` checks the `mcast_grp` field in `standard_metadata`:
+
+- `mcast_grp == 0` — no multicast replication. The packet is forwarded normally via `egress_spec`.
+- `mcast_grp != 0` — the PRE looks up the group ID in the multicast table and replicates the packet once for each `(egress_port, egress_rid)` pair configured in that group.
+
+Each copy is independent. It starts egress processing with `egress_port` and `egress_rid` set to the values from the replication list.
+
+<Note>
+  The multicast group table is not a P4 table you declare in your program. It exists inside `simple_switch` regardless of your P4 code, and you configure it via the control plane.
+</Note>
+
+## Two-level model: groups and nodes
+
+Multicast configuration uses two levels of objects:
+
+- **Multicast group** — identified by a group ID you choose (1–65535 for v1model's `bit<16>` `mcast_grp` field). Contains zero or more nodes.
+- **Multicast node** — has one `egress_rid` value and a set of `egress_port` values. All ports in a node share the same `egress_rid`.
+
+To produce copies with different `egress_rid` values, use multiple nodes. To produce multiple copies on the same port, you also need multiple nodes (a single node cannot list the same port twice).
+
+```
+mgrp(1113)
+  └── node (rid=5)  → ports: [0, 3]
+  └── node (rid=10) → ports: [7]
+```
+
+This configuration produces three copies when `mcast_grp = 1113`:
+- `(egress_port=0, egress_rid=5)`
+- `(egress_port=3, egress_rid=5)`
+- `(egress_port=7, egress_rid=10)`
+
+## Configuring a multicast group
+
+The following steps walk through creating the group described above.
+
+<Steps>
+  <Step title="Create the multicast nodes">
+    Create a node with `rid=5` forwarding to ports 0 and 3. The switch returns a node handle:
+
+    ```
+    RuntimeCmd: mc_node_create 5 0 3
+    Creating node with rid 5 , port map 1001 and lag map
+    node was created with handle 0
+    ```
+
+    Create a second node with `rid=10` forwarding to port 7:
+
+    ```
+    RuntimeCmd: mc_node_create 10 7
+    Creating node with rid 10 , port map 10000000 and lag map
+    node was created with handle 1
+    ```
+
+    Save the returned handles — you need them to associate nodes with a group.
+  </Step>
+  <Step title="Create the multicast group">
+    Create the group with group ID 1113:
+
+    ```
+    RuntimeCmd: mc_mgrp_create 1113
+    Creating multicast group 1113
+    ```
+
+    Groups are always identified by the ID you supply. There are no handles for groups.
+  </Step>
+  <Step title="Associate nodes with the group">
+    Associate both nodes with group 1113:
+
+    ```
+    RuntimeCmd: mc_node_associate 1113 0
+    Associating node 0 to multicast group 1113
+
+    RuntimeCmd: mc_node_associate 1113 1
+    Associating node 1 to multicast group 1113
+    ```
+  </Step>
+  <Step title="Verify with mc_dump">
+    ```
+    RuntimeCmd: mc_dump
+    ==========
+    MC ENTRIES
+    **********
+    mgrp(1113)
+      -> (L1h=0, rid=5) -> (ports=[0, 3], lags=[])
+      -> (L1h=1, rid=10) -> (ports=[7], lags=[])
+    ==========
+    LAGS
+    ==========
+    ```
+
+    `L1h` is the node handle (L1 handle). The group now produces three copies when `mcast_grp = 1113`.
+  </Step>
+</Steps>
+
+## Command reference
+
+### mc_node_create
+
+Creates a multicast node with a given `rid` and a list of ports.
+
+```
+mc_node_create <rid> <port> [<port> ...]
+```
+
+Returns a node handle used in subsequent commands.
+
+### mc_mgrp_create
+
+Creates a multicast group with the given group ID.
+
+```
+mc_mgrp_create <group id>
+```
+
+### mc_node_associate
+
+Associates a node with a multicast group. Both the group and the node must already exist.
+
+```
+mc_node_associate <group id> <node handle>
+```
+
+### mc_node_dissociate
+
+Removes a node from a multicast group. The node still exists and can be associated with another group.
+
+```
+mc_node_dissociate <group id> <node handle>
+```
+
+```
+RuntimeCmd: mc_node_dissociate 1113 0
+
+RuntimeCmd: mc_dump
+==========
+MC ENTRIES
+**********
+mgrp(1113)
+  -> (L1h=1, rid=10) -> (ports=[7], lags=[])
+==========
+LAGS
+==========
+```
+
+### mc_mgrp_destroy
+
+Destroys a multicast group. Dissociate all nodes first.
+
+```
+mc_mgrp_destroy <group id>
+```
+
+```
+RuntimeCmd: mc_mgrp_destroy 1113
+
+RuntimeCmd: mc_dump
+==========
+MC ENTRIES
+==========
+LAGS
+==========
+```
+
+### mc_dump
+
+Shows all multicast groups and their associated nodes. Groups with no nodes are shown but produce zero copies. Nodes that are not associated with any group do not appear in the output.
+
+## Constraints
+
+<AccordionGroup>
+  <Accordion title="A node can belong to only one group at a time">
+    You cannot associate the same node handle with two different groups simultaneously. Dissociate the node from its current group before associating it with a new one.
+  </Accordion>
+  <Accordion title="A node cannot send two copies to the same port">
+    All `egress_port` values within a single node must be unique. To replicate to the same port with different `egress_rid` values, create two separate nodes.
+  </Accordion>
+  <Accordion title="Destroy groups only after dissociating nodes">
+    While not strictly enforced, it is recommended to dissociate all nodes from a group before calling `mc_mgrp_destroy`.
+  </Accordion>
+  <Accordion title="Group 0 is reserved">
+    `mcast_grp = 0` means no multicast. Do not create a multicast group with ID 0.
+  </Accordion>
+</AccordionGroup>
+
+## Clone sessions (mirroring)
+
+Cloning creates copies of a packet while the original continues its normal processing path. Your P4 program calls `clone` or `clone3` during ingress or egress, specifying a clone session ID. The PRE creates copies destined for the port(s) configured for that session.
+
+`simple_switch` supports 32,768 clone sessions (IDs 0–32767). By default, all sessions are unconfigured: cloning to an unconfigured session produces zero copies.
+
+<Note>
+  Mirroring commands are only available in `simple_switch_CLI`, not in `runtime_CLI.py`.
+</Note>
+
+### mirroring_add
+
+Configures a clone session to send copies to a single unicast port.
+
+```
+mirroring_add <mirror_id> <egress_port>
+```
+
+```
+RuntimeCmd: mirroring_add 5 7
+
+RuntimeCmd: mirroring_get 5
+MirroringSessionConfig(mgid=None, port=7)
+```
+
+Future clone operations using session 5 will produce a single copy destined for port 7.
+
+### mirroring_add_mc
+
+Configures a clone session to use a multicast group, producing as many copies as the group is configured to create.
+
+```
+mirroring_add_mc <mirror_id> <mgrp>
+```
+
+```
+RuntimeCmd: mirroring_add_mc 5 22
+
+RuntimeCmd: mirroring_get 5
+MirroringSessionConfig(mgid=22, port=None)
+```
+
+The multicast group 22 must be configured separately using `mc_mgrp_create` and `mc_node_associate`.
+
+### mirroring_delete
+
+Returns a clone session to its default unconfigured state. Future clone operations using this session produce zero copies.
+
+```
+mirroring_delete <mirror_id>
+```
+
+```
+RuntimeCmd: mirroring_delete 5
+
+RuntimeCmd: mirroring_get 5
+Invalid mirroring operation (SESSION_NOT_FOUND)
+```
+
+### mirroring_get
+
+Shows the current configuration of a clone session.
+
+```
+mirroring_get <mirror_id>
+```
+
+Returns either a unicast port, a multicast group ID, or an error if the session is unconfigured.

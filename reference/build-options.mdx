@@ -1,0 +1,284 @@
+---
+title: "Build options"
+description: "All configure and cmake flags for building BMv2 from source, with default values and descriptions."
+keywords: ["build", "configure", "cmake", "autoconf", "flags", "options", "compile", "debug", "logging", "thrift", "nanomsg"]
+---
+
+BMv2 supports two build systems: the traditional **autoconf/automake** system and an experimental **cmake** system. Both support broadly equivalent feature flags.
+
+<Note>
+  The autoconf build is the recommended and most tested build path. The cmake build is experimental and has some differences: it produces a single version of each library rather than both static and shared versions, and it does not produce the `bmp4apps` library.
+</Note>
+
+## Autoconf options
+
+Run `./autogen.sh && ./configure [OPTIONS]` to use the autoconf build. Pass flags to `./configure`.
+
+<AccordionGroup>
+
+<Accordion title="Logging options">
+
+<ParamField path="--disable-logging-macros" type="flag">
+  Disables compile-time debug and trace logging macros. Improves runtime performance by eliminating logging overhead in production builds. Debug logging is enabled by default.
+
+  ```bash
+  ./configure --disable-logging-macros
+  ```
+</ParamField>
+
+<ParamField path="--disable-elogger" type="flag">
+  Disables the nanomsg event logger. The event logger broadcasts table hit/miss and parser transition events over a nanomsg channel. Disabling it reduces overhead when event logging is not needed.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Debugging options">
+
+<ParamField path="--enable-debugger" type="flag">
+  Enables the bmv2 remote debugger. Required to use `tools/p4dbg.py` to attach a debugger to a running switch. Disabled by default.
+
+  ```bash
+  ./configure --enable-debugger
+  ```
+
+  When running the switch, also pass `--debugger` on the command line to activate the debugger endpoint.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="PI and pdfixed options">
+
+<ParamField path="--with-pi" type="flag">
+  Builds the PI (P4 Independent) implementation for bmv2. Required when using `simple_switch_grpc` with the P4Runtime API. Requires the PI library headers to be installed.
+</ParamField>
+
+<ParamField path="--with-pdfixed" type="flag">
+  Builds the `pdfixed` library for bmv2. Used with PI-based control planes that rely on pdfixed for PD (Program-Dependent) API support.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Compiler and test options">
+
+<ParamField path="--enable-Werror" type="flag">
+  Treats all compiler warnings as errors. This flag is used by the CI test suite. Recommended when building locally to match CI behavior.
+</ParamField>
+
+<ParamField path="--with-stress-tests" type="flag">
+  Includes stress tests in the test suite. Used by CI. These tests may be non-deterministic or slow and are excluded from normal test runs.
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Module loading options">
+
+<ParamField path="--enable-modules" type="flag">
+  Allows third-party shared libraries to be loaded at runtime using `--load-modules` on the switch command line. Enabled by default on systems where `dlopen` is available.
+</ParamField>
+
+<ParamField path="--disable-modules" type="flag">
+  Disables runtime module loading. Use this if you do not need the `--load-modules` functionality and want a simpler build.
+</ParamField>
+
+</Accordion>
+
+</AccordionGroup>
+
+### Recommended configure command for CI compatibility
+
+To build with the same flags as the CI test environment:
+
+```bash
+./configure --with-pdfixed --with-pi --with-stress-tests --enable-debugger --enable-Werror
+```
+
+### Debug build
+
+To disable compiler optimization and include debug symbols:
+
+```bash
+./configure 'CXXFLAGS=-O0 -g'
+```
+
+---
+
+## cmake options
+
+The cmake build uses `-D` flags during the `cmake ..` configuration step.
+
+```bash
+mkdir build && cd build
+cmake [OPTIONS] ..
+make -j$(nproc)
+```
+
+<AccordionGroup>
+
+<Accordion title="Protocol and transport options">
+
+<ParamField path="WITH_NANOMSG" type="boolean" default="ON">
+  Builds support for generating nanomsg events. Required for the event logger and the debugger. Disable only if nanomsg is not installed.
+
+  ```bash
+  cmake -DWITH_NANOMSG=OFF ..
+  ```
+</ParamField>
+
+<ParamField path="WITH_THRIFT" type="boolean" default="ON">
+  Builds the Thrift RPC service. Required for the `simple_switch_CLI` and other Thrift-based control plane tools. Disable only if Thrift is not installed.
+
+  ```bash
+  cmake -DWITH_THRIFT=OFF ..
+  ```
+</ParamField>
+
+</Accordion>
+
+<Accordion title="PI and pdfixed options">
+
+<ParamField path="WITH_PI" type="boolean" default="OFF">
+  Builds the PI implementation for bmv2. Required for P4Runtime support. Requires PI headers (`PI/pi.h`, `PI/target/pi_imp.h`, `PI/p4info.h`) to be installed.
+
+  ```bash
+  cmake -DWITH_PI=ON ..
+  ```
+</ParamField>
+
+<ParamField path="WITH_PDFIXED" type="boolean" default="OFF">
+  Builds the pdfixed library for bmv2.
+
+  ```bash
+  cmake -DWITH_PDFIXED=ON ..
+  ```
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Target and test options">
+
+<ParamField path="WITH_TARGETS" type="boolean" default="ON">
+  Builds the bundled target binaries: `simple_switch`, `psa_switch`, `simple_switch_grpc`, etc. Disable to build only the core libraries.
+
+  ```bash
+  cmake -DWITH_TARGETS=OFF ..
+  ```
+</ParamField>
+
+<ParamField path="WITH_STRESS_TESTS" type="boolean" default="OFF">
+  Includes stress tests in the test suite.
+
+  ```bash
+  cmake -DWITH_STRESS_TESTS=ON ..
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_UNDETERMINISTIC_TESTS" type="boolean" default="ON">
+  Runs non-deterministic tests (such as queueing tests). Set to `OFF` to skip tests that may produce inconsistent results.
+
+  ```bash
+  cmake -DENABLE_UNDETERMINISTIC_TESTS=OFF ..
+  ```
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Debugging and coverage options">
+
+<ParamField path="ENABLE_DEBUGGER" type="boolean" default="OFF">
+  Enables the bmv2 remote debugger. Requires `WITH_NANOMSG=ON`.
+
+  ```bash
+  cmake -DENABLE_DEBUGGER=ON ..
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_COVERAGE" type="boolean" default="OFF">
+  Enables code coverage tracking. Compiles with `-coverage` and links against `gcov`.
+
+  ```bash
+  cmake -DENABLE_COVERAGE=ON ..
+  ```
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Logging options">
+
+<ParamField path="ENABLE_LOGGING_MACROS" type="boolean" default="ON">
+  Enables compile-time debug (`LOG_DEBUG_ON`) and trace (`LOG_TRACE_ON`) logging macros. Set to `OFF` for performance builds.
+
+  ```bash
+  cmake -DENABLE_LOGGING_MACROS=OFF ..
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_ELOGGER" type="boolean" default="ON">
+  Enables the nanomsg event logger (`ELOG_ON`). Requires `WITH_NANOMSG=ON`.
+
+  ```bash
+  cmake -DENABLE_ELOGGER=OFF ..
+  ```
+</ParamField>
+
+</Accordion>
+
+<Accordion title="Module and compiler options">
+
+<ParamField path="ENABLE_MODULES" type="boolean" default="ON">
+  Allows runtime loading of third-party modules. Automatically disabled if `dlopen` is not available on the system.
+
+  ```bash
+  cmake -DENABLE_MODULES=ON ..
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_WERROR" type="boolean" default="OFF">
+  Treats all compiler warnings as errors (`-Werror`). Enabled in CI.
+
+  ```bash
+  cmake -DENABLE_WERROR=ON ..
+  ```
+</ParamField>
+
+<ParamField path="ENABLE_WP4_16_STACKS" type="boolean" default="ON">
+  Implements header stacks strictly as per the P4_16 specification. Set to `OFF` to use a more permissive (legacy) behavior.
+
+  ```bash
+  cmake -DENABLE_WP4_16_STACKS=OFF ..
+  ```
+</ParamField>
+
+</Accordion>
+
+</AccordionGroup>
+
+### Building with Ninja
+
+For faster parallel builds, use the Ninja generator:
+
+```bash
+mkdir build && cd build
+cmake -GNinja ..
+ninja
+sudo ninja install
+```
+
+### Running tests
+
+<CodeGroup>
+
+```bash autoconf
+# From the source root
+make check
+```
+
+```bash cmake
+# From the build directory
+ctest
+```
+
+</CodeGroup>
+
+<Warning>
+  If you get a nanomsg error when running `make check`, try running with `sudo`.
+</Warning>

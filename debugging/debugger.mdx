@@ -1,0 +1,295 @@
+---
+title: "P4 Debugger (p4dbg)"
+description: "Use p4dbg to set breakpoints and watchpoints on P4 objects and packet fields, inspect field values, and trace packet execution through your P4 program in real time."
+sidebarTitle: "Debugger"
+keywords: ["p4dbg", "debugger", "breakpoint", "watchpoint", "debugging", "bmv2"]
+---
+
+The BMv2 debugger (`p4dbg`) lets you pause packet processing at specific P4 objects or field writes, inspect field values, and trace a packet's path through parsers, tables, and actions — similar to a source-level debugger for C code.
+
+## Enabling the debugger
+
+The debugger is not compiled in by default. You must opt in at build time and enable it at runtime.
+
+<Steps>
+  <Step title="Build with debugger support">
+    Pass `--enable-debugger` to `configure` before building:
+
+    <Tabs>
+      <Tab title="autoconf">
+        ```bash
+        ./autogen.sh
+        ./configure --enable-debugger
+        make
+        ```
+      </Tab>
+      <Tab title="cmake">
+        ```bash
+        mkdir build && cd build
+        cmake -DENABLE_DEBUGGER=ON ..
+        make -j$(nproc)
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  <Step title="Start simple_switch with the debugger flag">
+    Pass `--debugger` when launching your switch:
+
+    ```bash
+    sudo simple_switch --debugger -i 0@eth0 -i 1@eth1 my_program.json
+    ```
+  </Step>
+  <Step title="Attach p4dbg">
+    While the switch is running, attach the debugger. The tool discovers the
+    debugger socket automatically via Thrift:
+
+    ```bash
+    sudo ./tools/p4dbg.py [--thrift-port <port>]
+    ```
+
+    The default Thrift port is `9090`. Use `--thrift-port` when you started
+    `simple_switch` on a different port.
+
+    <Note>
+      `p4dbg.py` requires the `nnpy` Python package (nanomsg bindings). Install
+      it with `pip install nnpy` or use `ci/install-nnpy.sh`.
+    </Note>
+  </Step>
+</Steps>
+
+## Packet ID format
+
+Every event notification in the debugger includes the full packet ID in the
+form `<pid>.<cid>`:
+
+- **`pid`** — increments by one each time the switch receives a new incoming packet. The first packet is `0`.
+- **`cid`** — increments by one each time the switch generates a copy of the same incoming packet (e.g. for multicast or mirroring). The original packet has `cid = 0`.
+
+For example, if packet `3.0` is replicated to three ports, the copies receive
+IDs `3.1`, `3.2`, and `3.3`.
+
+The debugger tracks the **current packet ID**: the ID of the last packet for
+which a notification was received. Commands like `print` and `backtrace` use
+this value when you omit the packet ID.
+
+## Special field names
+
+In addition to header fields like `ipv4.srcAddr`, the debugger exposes special
+synthetic fields whose names start with `$`:
+
+| Name    | Description                                                         |
+| ------- | ------------------------------------------------------------------- |
+| `$cond` | Holds the result (32-bit) of the last P4 condition evaluated.       |
+
+You can set a watchpoint on `$cond` to stop every time a conditional is
+evaluated. Additional special fields (e.g. `$action`) are planned for future
+releases.
+
+## Command reference
+
+<AccordionGroup>
+  <Accordion title="Watchpoints — set_wp, unset_wp, show_wps">
+    Watchpoints pause the switch whenever the specified field is **written to**,
+    even if the value does not change.
+
+    ```
+    set_wp <field_name>      # alias: w
+    unset_wp <field_name>
+    show_wps
+    ```
+
+    **Examples:**
+
+    ```
+    P4DBG: set_wp ipv4.srcAddr
+    P4DBG: w ipv4.dstAddr
+    P4DBG: set_wp $cond
+    P4DBG: show_wps
+    P4DBG: unset_wp ipv4.srcAddr
+    ```
+
+    <Note>
+      Watchpoints do not fire for packets whose notifications are filtered out
+      via `filter_notifications` or suppressed via `skip` / `skip_all`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Breakpoints — break, delete, show_bps">
+    Breakpoints pause the switch when a packet is about to **enter** a named P4
+    object.
+
+    ```
+    break <p4_object_type> <p4_object_name>    # alias: b
+    delete <p4_object_type> <p4_object_name>   # alias: d
+    show_bps
+    ```
+
+    Valid P4 object types:
+
+    | Type          | Description                          |
+    | ------------- | ------------------------------------ |
+    | `parser`      | A parser block                       |
+    | `parse_state` | An individual parser state           |
+    | `pipeline`    | An ingress or egress pipeline        |
+    | `table`       | A match-action table                 |
+    | `condition`   | A conditional branch                 |
+    | `action`      | An action function                   |
+    | `deparser`    | A deparser block                     |
+
+    **Examples:**
+
+    ```
+    P4DBG: break parser start
+    P4DBG: break parse_state parse_ethernet
+    P4DBG: break pipeline ingress
+    P4DBG: b table ipv4_lpm
+    P4DBG: break action set_nhop
+    P4DBG: delete pipeline ingress
+    P4DBG: d table ipv4_lpm
+    P4DBG: show_bps
+    ```
+  </Accordion>
+
+  <Accordion title="Execution control — continue, next">
+    ```
+    continue    # alias: c
+    next        # alias: n
+    ```
+
+    - **`continue`** — resumes packet processing and stops only at the next
+      watchpoint or breakpoint event. If you forgot to set a watchpoint before
+      issuing `continue`, send `Ctrl-C` to the debugger to pause the switch and
+      set one.
+    - **`next`** — advances to the next event of any kind: a field write or a
+      packet entering any P4 object. Unlike `continue`, it does not require a
+      watchpoint or breakpoint to be set.
+  </Accordion>
+
+  <Accordion title="Inspection — print, backtrace">
+    ```
+    print [<packet_id>] <field_name>    # alias: p
+    backtrace [<packet_id>]             # alias: bt
+    ```
+
+    **`print`** reads the current value of a field for the given packet. If you
+    omit the packet ID, the current packet is used.
+
+    ```
+    P4DBG: print ipv4.srcAddr
+    P4DBG: p 3.0 ipv4.dstAddr
+    P4DBG: print $cond
+    ```
+
+    **`backtrace`** returns the ordered list of P4 objects the packet is
+    currently traversing:
+
+    ```
+    P4DBG: backtrace
+    parser 'parser' -> parse state 'parse_ethernet'
+
+    P4DBG: backtrace 3.0
+    pipeline 'ingress' -> table 'ipv4_lpm' -> action 'set_nhop'
+    ```
+  </Accordion>
+
+  <Accordion title="Packet-in control — break_packet_in, remove_packet_in, stop_packet_in, resume_packet_in">
+    These commands control how the debugger reacts to newly arriving packets.
+
+    | Command              | Description                                                                                          |
+    | -------------------- | ---------------------------------------------------------------------------------------------------- |
+    | `break_packet_in`    | Break every time a new packet (or copy of a packet) enters the switch, unless filtered.              |
+    | `remove_packet_in`   | Cancel `break_packet_in`. No effect if not previously called.                                        |
+    | `stop_packet_in`     | Prevent the switch from accepting any new incoming packets. Copies of in-flight packets are unaffected. |
+    | `resume_packet_in`   | Cancel `stop_packet_in`. No effect if not previously called.                                         |
+
+    ```
+    P4DBG: break_packet_in
+    P4DBG: remove_packet_in
+    P4DBG: stop_packet_in
+    P4DBG: resume_packet_in
+    ```
+  </Accordion>
+
+  <Accordion title="Notification filtering — filter_notifications">
+    Restrict the events the debugger displays to a subset of packet IDs.
+
+    ```
+    filter_notifications [<packet_id> ...]
+    ```
+
+    Each entry can be a full `<pid>.<cid>` or just a `<pid>` (matches all
+    copies of that packet). Calling `filter_notifications` with no arguments
+    resets the filter and shows all notifications again.
+
+    **Examples:**
+
+    ```
+    P4DBG: filter_notifications 7.0
+    P4DBG: filter_notifications 8.1 8.2 10.0
+    P4DBG: filter_notifications 8
+    P4DBG: filter_notifications 8 11.0 13
+    P4DBG: filter_notifications
+    ```
+  </Accordion>
+
+  <Accordion title="State management — reset">
+    ```
+    reset
+    ```
+
+    Resets all debugger state: watchpoints, breakpoints, notification filters,
+    skip lists, and the current packet ID.
+  </Accordion>
+
+  <Accordion title="Experimental commands — skip, skip_all, CLI">
+    <Warning>
+      These commands are experimental and may change in future releases.
+    </Warning>
+
+    **`skip`** — suppresses all future notifications for the current packet ID.
+    Cannot be undone.
+
+    **`skip_all`** — suppresses all future notifications for the current packet
+    ID **and** every copy sharing the same `<pid>`. Cannot be undone.
+
+    **`CLI`** — opens a Thrift connection to the switch and issues a standard
+    runtime CLI command. Useful for inspecting table state mid-debug without
+    leaving `p4dbg`.
+
+    ```
+    P4DBG: skip
+    P4DBG: skip_all
+    P4DBG: CLI table_dump ipv4_lpm
+    ```
+
+    <Note>
+      `CLI` requires Thrift support and the `runtime_CLI` module to be
+      importable. Only standard runtime commands are supported; multicast PRE
+      commands are not available through this interface.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+## Command quick reference
+
+| Command                | Short | Description                                                       |
+| ---------------------- | ----- | ----------------------------------------------------------------- |
+| `set_wp <field>`       | `w`   | Set a watchpoint on a field                                       |
+| `unset_wp <field>`     | —     | Remove a watchpoint                                               |
+| `show_wps`             | —     | List active watchpoints                                           |
+| `break <type> <name>`  | `b`   | Set a breakpoint on a P4 object                                   |
+| `delete <type> <name>` | `d`   | Remove a breakpoint                                               |
+| `show_bps`             | —     | List active breakpoints                                           |
+| `continue`             | `c`   | Resume processing until the next watchpoint or breakpoint         |
+| `next`                 | `n`   | Advance to the next event (field write or P4 object entry)        |
+| `print [id] <field>`   | `p`   | Print the value of a field for a packet                           |
+| `backtrace [id]`       | `bt`  | Show the P4 objects the packet is currently traversing            |
+| `break_packet_in`      | —     | Break on every new packet entering the switch                     |
+| `remove_packet_in`     | —     | Cancel `break_packet_in`                                          |
+| `stop_packet_in`       | —     | Stop accepting new incoming packets                               |
+| `resume_packet_in`     | —     | Resume accepting new incoming packets                             |
+| `filter_notifications` | —     | Restrict displayed events to specific packet IDs                  |
+| `reset`                | —     | Reset all debugger state                                          |
+| `skip`                 | —     | Suppress future notifications for the current packet (exp.)       |
+| `skip_all`             | —     | Suppress future notifications for the current packet family (exp.)|
+| `CLI <command>`        | —     | Run a runtime CLI command against the switch (exp.)               |
